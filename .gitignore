@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+*.html
+raw_page.html
+gpt_events.json
+ticketmaster_events.json
+*.egg-info/
+.DS_Store
