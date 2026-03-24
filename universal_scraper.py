@@ -1,3 +1,4 @@
+import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
@@ -87,7 +88,7 @@ def extract_events_with_llm(page_text, venue_name, city, state):
     """Extract events using GPT"""
     OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-api-key-here')
     client = OpenAI(api_key=OPENAI_API_KEY)
-    
+
     # White Oak needs much more text
     if "White Oak" in venue_name:
         char_limit = 100000  # GPT-4o can handle this
