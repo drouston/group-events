@@ -305,6 +305,9 @@
     <div class="header">
         <h1>Event Review Dashboard</h1>
         <div class="header-actions">
+            <button onclick="window.location.href='/published'" class="btn-secondary">
+                📝 Edit Published
+            </button>
             <button onclick="window.location.href='/calendar'" class="btn-secondary">
                 📅 View Calendar
             </button>
@@ -497,42 +500,51 @@
         });
         
         // Keyboard shortcuts
-        document.addEventListener('keydown', function(e) {
-            // Don't trigger if typing in input/textarea
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-            
-            const cards = document.querySelectorAll('.event-card');
-            const currentCard = cards[focusedCardIndex];
-            
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                focusedCardIndex = Math.min(focusedCardIndex + 1, cards.length - 1);
-                cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                cards[focusedCardIndex].style.outline = '2px solid #2196F3';
-                if (currentCard) currentCard.style.outline = '';
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                focusedCardIndex = Math.max(focusedCardIndex - 1, 0);
-                cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                cards[focusedCardIndex].style.outline = '2px solid #2196F3';
-                if (currentCard) currentCard.style.outline = '';
-            } else if (e.key === 'a' || e.key === 'A') {
-                e.preventDefault();
-                approveEvent(currentCard);
-            } else if (e.key === 'r' || e.key === 'R') {
-                e.preventDefault();
-                rejectEvent(currentCard);
-            } else if (e.key === 'e' || e.key === 'E') {
-                e.preventDefault();
-                const editButton = currentCard.querySelector('[data-action="edit"]');
-                toggleEditMode(currentCard, editButton);
-            } else if (e.key === ' ') {
-                e.preventDefault();
-                const checkbox = currentCard.querySelector('.event-checkbox');
-                checkbox.checked = !checkbox.checked;
-                updateSelectedCount();
-            }
-        });
+    let keyProcessing = false;  // Add debounce flag
+
+    document.addEventListener('keydown', function(e) {
+        // Don't trigger if typing in input/textarea
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        
+        // Prevent key repeat from triggering multiple times
+        if (keyProcessing) return;
+        
+        const cards = document.querySelectorAll('.event-card');
+        const currentCard = cards[focusedCardIndex];
+        
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            focusedCardIndex = Math.min(focusedCardIndex + 1, cards.length - 1);
+            cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            cards[focusedCardIndex].style.outline = '2px solid #2196F3';
+            if (currentCard) currentCard.style.outline = '';
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            focusedCardIndex = Math.max(focusedCardIndex - 1, 0);
+            cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            cards[focusedCardIndex].style.outline = '2px solid #2196F3';
+            if (currentCard) currentCard.style.outline = '';
+        } else if (e.key === 'a' || e.key === 'A') {
+            e.preventDefault();
+            keyProcessing = true;
+            approveEvent(currentCard);
+            setTimeout(() => keyProcessing = false, 1000);  // Prevent rapid repeats
+        } else if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            keyProcessing = true;
+            rejectEvent(currentCard);
+            setTimeout(() => keyProcessing = false, 1000);
+        } else if (e.key === 'e' || e.key === 'E') {
+            e.preventDefault();
+            const editButton = currentCard.querySelector('[data-action="edit"]');
+            toggleEditMode(currentCard, editButton);
+        } else if (e.key === ' ') {
+            e.preventDefault();
+            const checkbox = currentCard.querySelector('.event-checkbox');
+            checkbox.checked = !checkbox.checked;
+            updateSelectedCount();
+        }
+    });
         
         function getCardEventData(card) {
             const originalIndex = parseInt(card.getAttribute('data-index'));

@@ -157,20 +157,146 @@ def calculate_confidence(event):
 def save_event(event_data):
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('''INSERT INTO events 
-                 (name, date, doors_time, start_time, venue, city, state, 
-                  price, ticket_url, description, genre, confidence, notes, status, created_at, approved_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (event_data['name'], event_data['date'], event_data.get('doors_time'),
-               event_data.get('start_time'), event_data['venue'], event_data['city'],
-               event_data['state'], event_data.get('price'), event_data.get('ticket_url'),
-               event_data.get('description'), event_data.get('genre'),
-               json.dumps(event_data.get('confidence', {})),
-               event_data.get('notes', ''),
-               'approved',
-               datetime.now().isoformat(), datetime.now().isoformat()))
+    
+    # Check for duplicates first
+    if DATABASE_URL:
+        c.execute('''SELECT id FROM events 
+                     WHERE name = %s AND date = %s AND venue = %s AND status = 'approved' 
+                     LIMIT 1''', 
+                  (event_data['name'], event_data['date'], event_data['venue']))
+    else:
+        c.execute('''SELECT id FROM events 
+                     WHERE name = ? AND date = ? AND venue = ? AND status = 'approved' 
+                     LIMIT 1''', 
+                  (event_data['name'], event_data['date'], event_data['venue']))
+    
+    if c.fetchone():
+        print(f"Duplicate prevented: {event_data['name']} on {event_data['date']}")
+        conn.close()
+        return  # Already exists, don't insert
+    
+    # Insert if not duplicate
+    if DATABASE_URL:
+        c.execute('''INSERT INTO events 
+                     (name, date, doors_time, start_time, venue, city, state, 
+                      price, ticket_url, description, genre, confidence, notes, status, created_at, approved_at)
+                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data['city'],
+                   event_data['state'], event_data.get('price'), event_data.get('ticket_url'),
+                   event_data.get('description'), event_data.get('genre'),
+                   json.dumps(event_data.get('confidence', {})),
+                   event_data.get('notes', ''),
+                   'approved',
+                   datetime.now().isoformat(), datetime.now().isoformat()))
+    else:
+        c.execute('''INSERT INTO events 
+                     (name, date, doors_time, start_time, venue, city, state, 
+                      price, ticket_url, description, genre, confidence, notes, status, created_at, approved_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data['city'],
+                   event_data['state'], event_data.get('price'), event_data.get('ticket_url'),
+                   event_data.get('description'), event_data.get('genre'),
+                   json.dumps(event_data.get('confidence', {})),
+                   event_data.get('notes', ''),
+                   'approved',
+                   datetime.now().isoformat(), datetime.now().isoformat()))
+    
     conn.commit()
     conn.close()
+
+@app.route('/published')
+def published_events():
+    """View and edit already published events"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    if DATABASE_URL:
+        c.execute('''SELECT id, name, date, doors_time, start_time, venue, city, state,
+                     price, ticket_url, description, genre, notes
+                     FROM events 
+                     WHERE status = 'approved'
+                     ORDER BY date ASC''')
+    else:
+        c.execute('''SELECT id, name, date, doors_time, start_time, venue, city, state,
+                     price, ticket_url, description, genre, notes
+                     FROM events 
+                     WHERE status = 'approved'
+                     ORDER BY date ASC''')
+    
+    rows = c.fetchall()
+    events = []
+    
+    for row in rows:
+        events.append({
+            'id': row[0],
+            'name': row[1],
+            'date': row[2],
+            'doors_time': row[3],
+            'start_time': row[4],
+            'venue': row[5],
+            'city': row[6],
+            'state': row[7],
+            'price': row[8],
+            'ticket_url': row[9],
+            'description': row[10],
+            'genre': row[11],
+            'notes': row[12]
+        })
+    
+    conn.close()
+    
+    return render_template('published.html', events=events)
+
+@app.route('/update_published', methods=['POST'])
+def update_published():
+    """Update an already published event"""
+    event_data = request.json
+    event_id = event_data.get('id')
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    if DATABASE_URL:
+        c.execute('''UPDATE events 
+                     SET name = %s, date = %s, doors_time = %s, start_time = %s,
+                         venue = %s, price = %s, genre = %s, notes = %s
+                     WHERE id = %s''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data.get('price'),
+                   event_data.get('genre'), event_data.get('notes'), event_id))
+    else:
+        c.execute('''UPDATE events 
+                     SET name = ?, date = ?, doors_time = ?, start_time = ?,
+                         venue = ?, price = ?, genre = ?, notes = ?
+                     WHERE id = ?''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data.get('price'),
+                   event_data.get('genre'), event_data.get('notes'), event_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'status': 'success'})
+
+@app.route('/delete_published', methods=['POST'])
+def delete_published():
+    """Delete a published event"""
+    event_id = request.json.get('id')
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    if DATABASE_URL:
+        c.execute('DELETE FROM events WHERE id = %s', (event_id,))
+    else:
+        c.execute('DELETE FROM events WHERE id = ?', (event_id,))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'status': 'success'})
 
 @app.route('/')
 def index():
