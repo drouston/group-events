@@ -445,7 +445,11 @@ def scrape_all_venues():
     return all_events
 
 if __name__ == "__main__":
-    print("=== Houston Music Events Scraper ===\n")
+    import random
+    delay = random.randint(0, 12 * 60 * 60)  # Random delay up to 12 hours
+    print(f"=== Houston Music Events Scraper ===\n")
+    print(f"Sleeping {delay // 3600}h {(delay % 3600) // 60}m before scraping...")
+    time.sleep(delay)
 
     init_db()
 
