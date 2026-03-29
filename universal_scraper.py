@@ -121,10 +121,11 @@ VENUES = {
     },
     "continental_club": {
         "name": "Continental Club Houston",
-        "url": "https://continentalclub.com/houston",
+        "url": "https://events.timely.fun/uggqcowo/tile?categories=677491865&nofilters=1",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 5,
+        "wait_time": 8,
+        "scroll_count": 3,
         "venue_instruction": "This page covers two venues. Use venue 'Continental Club Houston' for most events. Use venue 'Big Top Charlies Shoeshine Lounge' for events described as being at 'The Big Top' in the title or description."
     },
     "woodland_pavilion": {
