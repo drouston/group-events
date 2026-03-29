@@ -197,6 +197,8 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
             print(f"Saved debug HTML to {filename}")
         
         soup = BeautifulSoup(html, 'html.parser')
+        for tag in soup(['script', 'style']):
+            tag.decompose()
         page_text = soup.get_text(separator='\n', strip=True)
         
         print(f"Extracted {len(page_text)} characters")
@@ -222,6 +224,7 @@ def extract_events_with_llm(page_text, venue_name, city, state):
     
     response = client.chat.completions.create(
         model="gpt-4o",
+        temperature=0,
         messages=[
             {
                 "role": "system",
@@ -269,6 +272,7 @@ def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False,
 
     response = client.chat.completions.create(
         model="gpt-4o",
+        temperature=0,
         messages=[
             {
                 "role": "system",
