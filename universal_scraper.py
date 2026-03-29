@@ -447,7 +447,10 @@ def scrape_all_venues():
 
 if __name__ == "__main__":
     import random
-    print(f"=== Houston Music Events Scraper ===\n")
+    import sys
+
+    print("=== Houston Music Events Scraper ===\n")
+
     if not os.environ.get('SKIP_DELAY'):
         delay = random.randint(0, 12 * 60 * 60)  # Random delay up to 12 hours
         print(f"Sleeping {delay // 3600}h {(delay % 3600) // 60}m before scraping...")
@@ -455,7 +458,22 @@ if __name__ == "__main__":
 
     init_db()
 
-    all_events = scrape_all_venues()
+    # Optional: target specific venues via CLI args, e.g. python universal_scraper.py continental_club 713_music_hall
+    target_keys = sys.argv[1:]
+    if target_keys:
+        invalid = [k for k in target_keys if k not in VENUES]
+        if invalid:
+            print(f"Unknown venue keys: {invalid}")
+            print(f"Valid keys: {list(VENUES.keys())}")
+            sys.exit(1)
+        all_events = []
+        for key in target_keys:
+            try:
+                all_events.extend(scrape_venue(key))
+            except Exception as e:
+                print(f"✗ Error scraping {VENUES[key]['name']}: {e}")
+    else:
+        all_events = scrape_all_venues()
 
     saved = 0
     skipped = 0
