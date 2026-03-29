@@ -125,7 +125,7 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 10,
-        "scroll_count": 20,
+        "scroll_count": 1,
         "venue_instruction": "This page covers two venues. Use venue 'Continental Club Houston' for most events. Use venue 'Big Top Charlies Shoeshine Lounge' for events described as being at 'The Big Top' in the title or description."
     },
     "woodland_pavilion": {
