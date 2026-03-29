@@ -179,6 +179,15 @@
                     <option value="White Oak Music Hall">White Oak Music Hall</option>
                     <option value="Heights Theater">Heights Theater</option>
                     <option value="Last Concert Cafe">Last Concert Cafe</option>
+                    <option value="Dan Electro's Guitar Bar">Dan Electro's Guitar Bar</option>
+                    <option value="713 Music Hall">713 Music Hall</option>
+                    <option value="Continental Club Houston">Continental Club Houston</option>
+                    <option value="Big Top Charlies Shoeshine Lounge">Big Top Charlies Shoeshine Lounge</option>
+                    <option value="Cynthia Woods Mitchell Pavilion">Cynthia Woods Mitchell Pavilion</option>
+                    <option value="House of Blues Houston">House of Blues Houston</option>
+                    <option value="House of Blues Houston - The Bronze Peacock">HOB - Bronze Peacock</option>
+                    <option value="House of Blues Houston - The Foundation Room">HOB - Foundation Room</option>
+                    <option value="Smart Financial Centre">Smart Financial Centre</option>
                 </select>
             </div>
             
@@ -345,11 +354,30 @@
                 filtered = filtered.filter(e => e.date <= endDate);
             }
             
-            renderCalendar(filtered);
+            renderCalendar(filterActiveEvents(filtered));
         }
         
-        // Initial render
-        renderCalendar(allEvents);
+        function filterActiveEvents(events) {
+            const now = new Date();
+            const todayStr = now.toISOString().split('T')[0];
+
+            return events.filter(event => {
+                if (event.date > todayStr) return true;
+                if (event.date < todayStr) return false;
+
+                // Today: keep if no start_time, or if within 2 hrs of start
+                if (!event.start_time) return true;
+
+                const [hours, minutes] = event.start_time.split(':').map(Number);
+                const eventStart = new Date(now);
+                eventStart.setHours(hours, minutes, 0, 0);
+                const cutoff = new Date(eventStart.getTime() + 2 * 60 * 60 * 1000);
+                return now < cutoff;
+            });
+        }
+
+        // Initial render - only current/future events
+        renderCalendar(filterActiveEvents(allEvents));
     </script>
 </body>
 </html>

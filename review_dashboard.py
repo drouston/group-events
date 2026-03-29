@@ -357,12 +357,23 @@ def stats():
 def calendar():
     conn = get_db_connection()
     c = conn.cursor()
-    
-    c.execute('''SELECT name, date, doors_time, start_time, venue, city, 
-                 price, genre, description 
-                 FROM events 
-                 WHERE status = 'approved'
-                 ORDER BY date ASC''')
+
+    today = datetime.now().date().isoformat()
+
+    if DATABASE_URL:
+        c.execute('''SELECT name, date, doors_time, start_time, venue, city,
+                     price, genre, description
+                     FROM events
+                     WHERE status = 'approved'
+                     AND date >= %s
+                     ORDER BY date ASC''', (today,))
+    else:
+        c.execute('''SELECT name, date, doors_time, start_time, venue, city,
+                     price, genre, description
+                     FROM events
+                     WHERE status = 'approved'
+                     AND date >= ?
+                     ORDER BY date ASC''', (today,))
     
     events = []
     for row in c.fetchall():

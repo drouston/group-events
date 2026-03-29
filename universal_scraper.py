@@ -1,10 +1,78 @@
 import os
+import json
+import time
+import sqlite3
+from datetime import datetime
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from openai import OpenAI
-import json
-import time
+
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+
+def get_db_connection():
+    if DATABASE_URL:
+        import psycopg2
+        db_url = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+        return psycopg2.connect(db_url)
+    return sqlite3.connect('events.db')
+
+
+def init_db():
+    conn = get_db_connection()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute('''CREATE TABLE IF NOT EXISTS events
+                     (id SERIAL PRIMARY KEY, name TEXT, date TEXT,
+                      doors_time TEXT, start_time TEXT, venue TEXT,
+                      city TEXT, state TEXT, price TEXT, ticket_url TEXT,
+                      description TEXT, genre TEXT, confidence TEXT,
+                      notes TEXT, status TEXT DEFAULT 'pending',
+                      created_at TEXT, approved_at TEXT)''')
+    else:
+        c.execute('''CREATE TABLE IF NOT EXISTS events
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date TEXT,
+                      doors_time TEXT, start_time TEXT, venue TEXT,
+                      city TEXT, state TEXT, price TEXT, ticket_url TEXT,
+                      description TEXT, genre TEXT, confidence TEXT,
+                      notes TEXT, status TEXT DEFAULT 'pending',
+                      created_at TEXT, approved_at TEXT)''')
+    conn.commit()
+    conn.close()
+
+
+def save_event_to_db(event):
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+
+    # Skip if exact duplicate already exists
+    c.execute(f'''SELECT id FROM events
+                 WHERE name = {ph} AND date = {ph} AND venue = {ph}
+                 AND status = 'approved' LIMIT 1''',
+              (event['name'], event['date'], event['venue']))
+    if c.fetchone():
+        print(f"  Duplicate skipped: {event['name']}")
+        conn.close()
+        return False
+
+    now = datetime.now().isoformat()
+    c.execute(f'''INSERT INTO events
+                 (name, date, doors_time, start_time, venue, city, state,
+                  price, ticket_url, description, genre, confidence, notes,
+                  status, created_at, approved_at)
+                 VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+              (event['name'], event['date'], event.get('doors_time'),
+               event.get('start_time'), event['venue'], event.get('city', ''),
+               event.get('state', ''), event.get('price'), event.get('ticket_url'),
+               event.get('description'), event.get('genre'),
+               json.dumps(event.get('confidence', {})),
+               event.get('notes', ''), 'approved', now, now))
+    conn.commit()
+    conn.close()
+    return True
 
 # Venue configurations
 VENUES = {
@@ -42,7 +110,58 @@ VENUES = {
         "url": "https://danelectros.com/events/",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 5  # Increased
+        "wait_time": 5
+    },
+    "713_music_hall": {
+        "name": "713 Music Hall",
+        "url": "https://www.713musichall.com/shows",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5
+    },
+    "continental_club": {
+        "name": "Continental Club Houston",
+        "url": "https://continentalclub.com/houston",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "venue_instruction": "This page covers two venues. Use venue 'Continental Club Houston' for most events. Use venue 'Big Top Charlies Shoeshine Lounge' for events described as being at 'The Big Top' in the title or description."
+    },
+    "woodland_pavilion": {
+        "name": "Cynthia Woods Mitchell Pavilion",
+        "url": "https://www.woodlandscenter.org/events",
+        "city": "The Woodlands",
+        "state": "TX",
+        "wait_time": 6
+    },
+    "house_of_blues_main": {
+        "name": "House of Blues Houston",
+        "url": "https://houston.houseofblues.com/shows",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5
+    },
+    "house_of_blues_peacock": {
+        "name": "House of Blues Houston - The Bronze Peacock",
+        "url": "https://houston.houseofblues.com/shows/rooms/the-bronze-peacock",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5
+    },
+    "house_of_blues_foundation": {
+        "name": "House of Blues Houston - The Foundation Room",
+        "url": "https://houston.houseofblues.com/shows/rooms/foundation-room",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5
+    },
+    "smart_financial": {
+        "name": "Smart Financial Centre",
+        "url": "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/concert/",
+        "city": "Sugar Land",
+        "state": "TX",
+        "wait_time": 6,
+        "scroll_count": 3
     }
 }
 
@@ -52,6 +171,9 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
     
     chrome_options = Options()
     chrome_options.add_argument('--headless')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
+    chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
     
     driver = webdriver.Chrome(options=chrome_options)
@@ -136,13 +258,14 @@ Return ONLY valid JSON with an "events" array."""
     
     return json.loads(response.choices[0].message.content)
 
-def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False):
+def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None):
     """Extract events using GPT from text or HTML"""
     OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-api-key-here')
     client = OpenAI(api_key=OPENAI_API_KEY)
-    
+
     content_type = "HTML code" if is_html else "text"
-    
+    venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
+
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -155,7 +278,7 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - date: YYYY-MM-DD format (use 2026 for dates without year)
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
-- venue: "{venue_name}"
+- venue: "{venue_name}" (see venue note below if present)
 - city: "{city}"
 - state: "{state}"
 - price: Extract if mentioned
@@ -163,7 +286,7 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - description: Brief description
 - genre: Music genre if discernible
 - confidence: Field-level confidence scores
-
+{venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
 
 Return ONLY valid JSON with an "events" array containing ALL events found."""
@@ -175,7 +298,7 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
         ],
         response_format={"type": "json_object"}
     )
-    
+
     return json.loads(response.choices[0].message.content)
 
 def parse_white_oak_html(html):
@@ -295,11 +418,12 @@ def scrape_venue(venue_key):
         events_data = parse_white_oak_html(html)
     else:
         events_data = extract_events_with_llm_raw(
-            page_text[:20000], 
+            page_text[:20000],
             venue['name'],
             venue['city'],
             venue['state'],
-            is_html=False
+            is_html=False,
+            venue_instruction=venue.get('venue_instruction')
         )
     
     events = events_data.get('events', [])
@@ -322,28 +446,21 @@ def scrape_all_venues():
 
 if __name__ == "__main__":
     print("=== Houston Music Events Scraper ===\n")
-    
-    # Scrape all venues
+
+    init_db()
+
     all_events = scrape_all_venues()
-    
-    # Save results
-    output = {
-        'events': all_events,
-        'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'total_events': len(all_events)
-    }
-    
-    with open('gpt_events.json', 'w') as f:
-        json.dump(output, f, indent=2)
-    
+
+    saved = 0
+    skipped = 0
+    for event in all_events:
+        if save_event_to_db(event):
+            saved += 1
+        else:
+            skipped += 1
+
     print(f"\n{'='*60}")
-    print(f"✓ Total events scraped: {len(all_events)}")
-    print(f"✓ Saved to gpt_events.json")
+    print(f"✓ Total scraped:  {len(all_events)}")
+    print(f"✓ Saved to DB:    {saved}")
+    print(f"✓ Duplicates skipped: {skipped}")
     print(f"{'='*60}")
-    
-    # Show breakdown by venue
-    from collections import Counter
-    venue_counts = Counter(event['venue'] for event in all_events)
-    print("\nEvents by venue:")
-    for venue, count in venue_counts.items():
-        print(f"  {venue}: {count}")
