@@ -316,6 +316,21 @@ def index():
     
     return render_template('review.html', events=events)
 
+@app.route('/debug')
+def debug():
+    import os
+    db_url = os.environ.get('DATABASE_URL', 'NOT SET')
+    masked = db_url[:30] + '...' if len(db_url) > 30 else db_url
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM events WHERE status = 'approved'")
+        count = c.fetchone()[0]
+        conn.close()
+        return jsonify({'DATABASE_URL': masked, 'approved_events': count})
+    except Exception as e:
+        return jsonify({'DATABASE_URL': masked, 'error': str(e)})
+
 @app.route('/stats')
 def stats():
     conn = get_db_connection()
