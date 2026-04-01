@@ -102,9 +102,14 @@ def find_duplicates(event_name, event_date, event_venue):
     c = conn.cursor()
     
     # Check exact match
-    c.execute('''SELECT id, name, date, venue FROM events 
-                 WHERE status = 'approved' 
-                 AND date = ? AND venue = ?''', (event_date, event_venue))
+    if DATABASE_URL:
+        c.execute('''SELECT id, name, date, venue FROM events 
+                     WHERE status = 'approved' 
+                     AND date = %s AND venue = %s''', (event_date, event_venue))
+    else:
+        c.execute('''SELECT id, name, date, venue FROM events 
+                     WHERE status = 'approved' 
+                     AND date = ? AND venue = ?''', (event_date, event_venue))
     
     exact_matches = []
     similar_matches = []
