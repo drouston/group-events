@@ -89,12 +89,43 @@ def init_db():
 
 # Load events from scraper output
 def load_pending_events():
-    try:
-        with open('gpt_events.json', 'r') as f:
-            data = json.load(f)
-            return data.get('events', [])
-    except FileNotFoundError:
-        return []
+    """Load pending events from database"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    if DATABASE_URL:
+        c.execute('''SELECT name, date, doors_time, start_time, venue, city, state,
+                     price, ticket_url, description, genre, confidence, notes
+                     FROM events WHERE status = 'pending' ORDER BY date ASC''')
+    else:
+        # Fallback to JSON for local development
+        try:
+            with open('gpt_events.json', 'r') as f:
+                data = json.load(f)
+                return data.get('events', [])
+        except FileNotFoundError:
+            return []
+    
+    events = []
+    for row in c.fetchall():
+        events.append({
+            'name': row[0],
+            'date': row[1],
+            'doors_time': row[2],
+            'start_time': row[3],
+            'venue': row[4],
+            'city': row[5],
+            'state': row[6],
+            'price': row[7],
+            'ticket_url': row[8],
+            'description': row[9],
+            'genre': row[10],
+            'confidence': json.loads(row[11]) if row[11] else {},
+            'notes': row[12] or ''
+        })
+    
+    conn.close()
+    return events
 
 # Check for duplicates
 def find_duplicates(event_name, event_date, event_venue):

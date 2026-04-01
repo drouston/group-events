@@ -449,46 +449,69 @@ def scrape_all_venues():
     
     return all_events
 
-if __name__ == "__main__":
-    import random
-    import sys
-
-    print("=== Houston Music Events Scraper ===\n")
-
-    if not os.environ.get('SKIP_DELAY'):
-        delay = random.randint(0, 12 * 60 * 60)  # Random delay up to 12 hours
-        print(f"Sleeping {delay // 3600}h {(delay % 3600) // 60}m before scraping...")
-        time.sleep(delay)
-
-    init_db()
-
-    # Optional: target specific venues via CLI args, e.g. python universal_scraper.py continental_club 713_music_hall
-    target_keys = sys.argv[1:]
-    if target_keys:
-        invalid = [k for k in target_keys if k not in VENUES]
-        if invalid:
-            print(f"Unknown venue keys: {invalid}")
-            print(f"Valid keys: {list(VENUES.keys())}")
-            sys.exit(1)
-        all_events = []
-        for key in target_keys:
-            try:
-                all_events.extend(scrape_venue(key))
-            except Exception as e:
-                print(f"✗ Error scraping {VENUES[key]['name']}: {e}")
-    else:
-        all_events = scrape_all_venues()
-
-    saved = 0
+def save_to_database(events):
+    """Save events directly to PostgreSQL database"""
+    DATABASE_URL = os.environ.get('DATABASE_URL')
+    
+    if not DATABASE_URL:
+        print("No DATABASE_URL found - saving to JSON instead")
+        with open('gpt_events.json', 'w') as f:
+            json.dump({'events': events}, f, indent=2)
+        return
+    
+    # Fix Railway's postgres:// URL
+    db_url = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+    
+    import psycopg2
+    conn = psycopg2.connect(db_url)
+    c = conn.cursor()
+    
+    inserted = 0
     skipped = 0
-    for event in all_events:
-        if save_event_to_db(event):
-            saved += 1
-        else:
-            skipped += 1
-
+    
+    for event in events:
+        try:
+            # Check for duplicates
+            c.execute('''SELECT id FROM events 
+                         WHERE name = %s AND date = %s AND venue = %s 
+                         LIMIT 1''',
+                      (event['name'], event['date'], event['venue']))
+            
+            if c.fetchone():
+                skipped += 1
+                continue
+            
+            # Insert event as pending for review
+            c.execute('''INSERT INTO events 
+                         (name, date, doors_time, start_time, venue, city, state,
+                          price, ticket_url, description, genre, confidence, status, created_at)
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                      (event['name'], event['date'], event.get('doors_time'),
+                       event.get('start_time'), event['venue'], event['city'], event['state'],
+                       event.get('price'), event.get('ticket_url'), event.get('description'),
+                       event.get('genre'), json.dumps(event.get('confidence', {})),
+                       'pending', datetime.now().isoformat()))
+            inserted += 1
+            
+        except Exception as e:
+            print(f"Error inserting {event['name']}: {e}")
+    
+    conn.commit()
+    conn.close()
+    
     print(f"\n{'='*60}")
-    print(f"✓ Total scraped:  {len(all_events)}")
-    print(f"✓ Saved to DB:    {saved}")
-    print(f"✓ Duplicates skipped: {skipped}")
+    print(f"✓ Inserted {inserted} new events into database")
+    print(f"⊘ Skipped {skipped} duplicates")
+    print(f"{'='*60}")
+
+if __name__ == "__main__":
+    print("=== Houston Music Events Scraper ===\n")
+    
+    all_events = scrape_all_venues()
+    
+    # Save to database instead of JSON
+    save_to_database(all_events)
+    
+    print(f"\n{'='*60}")
+    print(f"✓ Total events scraped: {len(all_events)}")
     print(f"{'='*60}")
