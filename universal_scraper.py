@@ -233,8 +233,11 @@ def extract_events_with_llm(page_text, venue_name, city, state):
 Extract ALL events from the provided text into a JSON array. For each event:
 - name: Full event name/title
 - date: YYYY-MM-DD format (use 2026 for dates without year)
-- doors_time: HH:MM format (24-hour) or null
-- start_time: HH:MM format (24-hour) or null (look for times like "6:30pm", "7:00pm", "Doors: 7pm", etc.)
+- doors_time: HH:MM format (24-hour) or null (look for times like "6:30pm", "7:00pm", "Doors: 7pm", etc.)
+- start_time: HH:MM format (24-hour) (24-hour, Central Time - DO NOT CONVERT TIMEZONES) or null 
+  IMPORTANT: If you see "8:00 PM" or "8pm", output "20:00" NOT "02:00"
+  If you see "7:30 PM", output "19:30" NOT "01:30"
+  DO NOT apply any timezone conversion. Keep times exactly as shown on the website.
 - venue: "{venue_name}"
 - city: "{city}"
 - state: "{state}"

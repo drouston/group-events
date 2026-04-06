@@ -223,7 +223,7 @@ def save_event(event_data):
                    event_data.get('description'), event_data.get('genre'),
                    json.dumps(event_data.get('confidence', {})),
                    event_data.get('notes', ''),
-                   'approved',
+                   'pending',
                    datetime.now().isoformat(), datetime.now().isoformat()))
     else:
         c.execute('''INSERT INTO events 
@@ -236,7 +236,7 @@ def save_event(event_data):
                    event_data.get('description'), event_data.get('genre'),
                    json.dumps(event_data.get('confidence', {})),
                    event_data.get('notes', ''),
-                   'approved',
+                   'pending',
                    datetime.now().isoformat(), datetime.now().isoformat()))
     
     conn.commit()
@@ -509,6 +509,157 @@ def update_event():
     event_data = request.json
     save_event(event_data)
     return jsonify({'status': 'success'})
+
+@app.route('/api/filter_events', methods=['POST'])
+def filter_events():
+    """Filter and sort events based on criteria"""
+    filters = request.json
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Base query
+    query = '''SELECT id, name, date, doors_time, start_time, venue, city, state,
+               price, ticket_url, description, genre, confidence, notes, status, created_at
+               FROM events WHERE 1=1'''
+    params = []
+    
+    # Status filter
+    if filters.get('status') and filters['status'] != 'all':
+        if DATABASE_URL:
+            query += ' AND status = %s'
+        else:
+            query += ' AND status = ?'
+        params.append(filters['status'])
+    
+    # Venue filter
+    if filters.get('venue') and filters['venue'] != 'all':
+        if DATABASE_URL:
+            query += ' AND venue = %s'
+        else:
+            query += ' AND venue = ?'
+        params.append(filters['venue'])
+    
+    # Genre filter
+    if filters.get('genre') and filters['genre'] != 'all':
+        if DATABASE_URL:
+            query += ' AND genre = %s'
+        else:
+            query += ' AND genre = ?'
+        params.append(filters['genre'])
+    
+    # Date range filter
+    if filters.get('date_from'):
+        if DATABASE_URL:
+            query += ' AND date >= %s'
+        else:
+            query += ' AND date >= ?'
+        params.append(filters['date_from'])
+    
+    if filters.get('date_to'):
+        if DATABASE_URL:
+            query += ' AND date <= %s'
+        else:
+            query += ' AND date <= ?'
+        params.append(filters['date_to'])
+    
+    # Search filter
+    if filters.get('search'):
+        if DATABASE_URL:
+            query += ' AND LOWER(name) LIKE %s'
+            params.append(f"%{filters['search'].lower()}%")
+        else:
+            query += ' AND LOWER(name) LIKE ?'
+            params.append(f"%{filters['search'].lower()}%")
+    
+    # Missing data filter
+    if filters.get('missing_data'):
+        query += ' AND (price IS NULL OR genre IS NULL OR start_time IS NULL)'
+    
+    # Sort
+    sort_by = filters.get('sort_by', 'date')
+    sort_order = filters.get('sort_order', 'asc')
+    
+    sort_mapping = {
+        'date': 'date',
+        'confidence': 'confidence',
+        'venue': 'venue',
+        'created': 'created_at',
+        'name': 'name'
+    }
+    
+    sort_col = sort_mapping.get(sort_by, 'date')
+    query += f' ORDER BY {sort_col} {sort_order.upper()}'
+    
+    # Execute query
+    c.execute(query, params)
+    rows = c.fetchall()
+    
+    events = []
+    for row in rows:
+        event = {
+            'id': row[0],
+            'name': row[1],
+            'date': row[2],
+            'doors_time': row[3],
+            'start_time': row[4],
+            'venue': row[5],
+            'city': row[6],
+            'state': row[7],
+            'price': row[8],
+            'ticket_url': row[9],
+            'description': row[10],
+            'genre': row[11],
+            'confidence': json.loads(row[12]) if row[12] else {},
+            'notes': row[13],
+            'status': row[14],
+            'created_at': row[15]
+        }
+        
+        # Calculate overall confidence
+        event['overall_confidence'] = calculate_confidence(event)
+        
+        # Check for duplicates
+        event['duplicates'] = find_duplicates(event['name'], event['date'], event['venue'])
+        
+        events.append(event)
+    
+    conn.close()
+    
+    # Apply confidence filter (can't do in SQL easily)
+    if filters.get('confidence_level'):
+        if filters['confidence_level'] == 'low':
+            events = [e for e in events if e['overall_confidence'] < 0.6]
+        elif filters['confidence_level'] == 'medium':
+            events = [e for e in events if 0.6 <= e['overall_confidence'] < 0.8]
+        elif filters['confidence_level'] == 'high':
+            events = [e for e in events if e['overall_confidence'] >= 0.8]
+    
+    # Apply duplicates filter
+    if filters.get('has_duplicates'):
+        events = [e for e in events if e['duplicates']['exact'] or e['duplicates']['similar']]
+    
+    return jsonify({'events': events, 'count': len(events)})
+
+@app.route('/api/venues')
+def get_venues():
+    """Get list of all unique venues"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT DISTINCT venue FROM events ORDER BY venue')
+    venues = [row[0] for row in c.fetchall()]
+    conn.close()
+    return jsonify({'venues': venues})
+
+@app.route('/api/genres')
+def get_genres():
+    """Get list of all unique genres"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT DISTINCT genre FROM events WHERE genre IS NOT NULL ORDER BY genre')
+    genres = [row[0] for row in c.fetchall()]
+    conn.close()
+    return jsonify({'genres': genres})
 
 if __name__ == '__main__':
     init_db()

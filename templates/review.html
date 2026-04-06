@@ -5,7 +5,7 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 20px;
             background: #f5f5f5;
@@ -31,6 +31,49 @@
             gap: 10px;
         }
         
+        .filters-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .filters-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .filter-group label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+        }
+        
+        .filter-group select,
+        .filter-group input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .filter-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 15px;
+        }
+        
         .stats-bar {
             background: white;
             padding: 15px 20px;
@@ -39,6 +82,7 @@
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             display: flex;
             gap: 30px;
+            flex-wrap: wrap;
         }
         
         .stat {
@@ -98,6 +142,11 @@
             border-left: 4px solid #f44336;
         }
         
+        .event-card.approved {
+            background: #f9f9f9;
+            border-left: 4px solid #4CAF50;
+        }
+        
         .event-header {
             display: flex;
             justify-content: space-between;
@@ -116,9 +165,6 @@
             width: 20px;
             height: 20px;
             cursor: pointer;
-        }
-
-        .event-checkbox {
             display: block !important;
         }
         
@@ -126,6 +172,28 @@
             font-size: 20px;
             font-weight: bold;
             color: #333;
+        }
+        
+        .event-id {
+            font-size: 12px;
+            color: #999;
+        }
+        
+        .status-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .status-pending {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        
+        .status-approved {
+            background: #e8f5e9;
+            color: #2e7d32;
         }
         
         .confidence-badge {
@@ -241,15 +309,27 @@
             color: white;
         }
         
+        .delete {
+            background: #f44336;
+            color: white;
+        }
+        
         .btn-secondary {
             background: #757575;
+            color: white;
+        }
+        
+        .btn-primary {
+            background: #2196F3;
             color: white;
         }
         
         .approve:hover { background: #45a049; }
         .reject:hover { background: #da190b; }
         .edit:hover { background: #0b7dda; }
+        .delete:hover { background: #da190b; }
         .btn-secondary:hover { background: #616161; }
+        .btn-primary:hover { background: #0b7dda; }
         
         input, select {
             padding: 5px;
@@ -267,8 +347,26 @@
             display: block;
         }
         
-        input, select {
+        input:not(.event-checkbox):not([type="date"]):not([type="time"]):not([type="text"][class*="filter"]),
+        select:not(.filter-group select) {
             display: none;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .no-results {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+        
+        .no-results-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
         }
         
         .keyboard-hint {
@@ -305,9 +403,6 @@
     <div class="header">
         <h1>Event Review Dashboard</h1>
         <div class="header-actions">
-            <button onclick="window.location.href='/published'" class="btn-secondary">
-                📝 Edit Published
-            </button>
             <button onclick="window.location.href='/calendar'" class="btn-secondary">
                 📅 View Calendar
             </button>
@@ -317,10 +412,95 @@
         </div>
     </div>
     
+    <div class="filters-panel">
+        <div class="filters-grid">
+            <div class="filter-group">
+                <label>Search Events</label>
+                <input type="text" id="filter-search" placeholder="Search by name...">
+            </div>
+            
+            <div class="filter-group">
+                <label>Status</label>
+                <select id="filter-status">
+                    <option value="all">All Events</option>
+                    <option value="pending" selected>Pending Review</option>
+                    <option value="approved">Approved</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Venue</label>
+                <select id="filter-venue">
+                    <option value="all">All Venues</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Genre</label>
+                <select id="filter-genre">
+                    <option value="all">All Genres</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Confidence Level</label>
+                <select id="filter-confidence">
+                    <option value="all">All Levels</option>
+                    <option value="low">Low (Needs Review)</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Date From</label>
+                <input type="date" id="filter-date-from">
+            </div>
+            
+            <div class="filter-group">
+                <label>Date To</label>
+                <input type="date" id="filter-date-to">
+            </div>
+            
+            <div class="filter-group">
+                <label>Special Filters</label>
+                <select id="filter-special">
+                    <option value="">None</option>
+                    <option value="duplicates">Has Duplicates</option>
+                    <option value="missing">Missing Data</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Sort By</label>
+                <select id="sort-by">
+                    <option value="date">Date</option>
+                    <option value="confidence">Confidence (Low First)</option>
+                    <option value="venue">Venue</option>
+                    <option value="created">Recently Added</option>
+                    <option value="name">Event Name</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label>Sort Order</label>
+                <select id="sort-order">
+                    <option value="asc">Ascending</option>
+                    <option value="desc">Descending</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="filter-actions">
+            <button onclick="resetFilters()" class="btn-secondary">Reset Filters</button>
+            <button onclick="applyFilters()" class="btn-primary">Apply Filters</button>
+        </div>
+    </div>
+    
     <div class="stats-bar">
         <div class="stat">
-            <span class="stat-label">Total Events</span>
-            <span class="stat-value">{{ events|length }}</span>
+            <span class="stat-label">Total Showing</span>
+            <span class="stat-value" id="stat-total">0</span>
         </div>
         <div class="stat">
             <span class="stat-label">Selected</span>
@@ -328,15 +508,11 @@
         </div>
         <div class="stat">
             <span class="stat-label">Low Confidence</span>
-            <span class="stat-value">
-                {{ events|selectattr('overall_confidence', 'lt', 0.6)|list|length }}
-            </span>
+            <span class="stat-value" id="stat-low-confidence">0</span>
         </div>
         <div class="stat">
-            <span class="stat-label">Potential Duplicates</span>
-            <span class="stat-value">
-                {{ events|selectattr('duplicates.exact', 'defined')|selectattr('duplicates.exact')|list|length }}
-            </span>
+            <span class="stat-label">Duplicates</span>
+            <span class="stat-value" id="stat-duplicates">0</span>
         </div>
     </div>
     
@@ -352,104 +528,14 @@
             <button class="reject" onclick="batchReject()">
                 ✗ Reject Selected
             </button>
+            <button class="delete" onclick="batchDelete()">
+                🗑 Delete Selected
+            </button>
         </div>
     </div>
     
     <div id="events-container">
-        {% for event in events %}
-        <div class="event-card {% if event.overall_confidence < 0.6 %}low-confidence{% endif %} {% if event.duplicates.exact %}has-duplicates{% endif %}" 
-             data-index="{{ loop.index0 }}">
-            <div class="event-header">
-                <div class="event-title-row">
-                    <input type="checkbox" class="event-checkbox" onchange="updateSelectedCount()">
-                    <div class="event-title">{{ event.name }}</div>
-                    {% if event.overall_confidence >= 0.8 %}
-                        <span class="confidence-badge confidence-high">High Confidence</span>
-                    {% elif event.overall_confidence >= 0.5 %}
-                        <span class="confidence-badge confidence-medium">Medium Confidence</span>
-                    {% else %}
-                        <span class="confidence-badge confidence-low">Low Confidence - Review Carefully</span>
-                    {% endif %}
-                </div>
-            </div>
-            
-            {% if event.duplicates.exact %}
-            <div class="duplicate-warning">
-                <div class="duplicate-warning-title">⚠️ Potential Duplicate Detected</div>
-                {% for dup in event.duplicates.exact %}
-                <div class="duplicate-item">
-                    Similar to: {{ dup.name }} ({{ (dup.similarity * 100)|int }}% match)
-                </div>
-                {% endfor %}
-            </div>
-            {% endif %}
-            
-            <div class="event-details">
-                <div class="detail-item">
-                    <span class="detail-label">Date:</span>
-                    <span class="detail-value">{{ event.date }}</span>
-                    <input type="date" class="edit-input" value="{{ event.date }}" data-field="date">
-                </div>
-                
-                <div class="detail-item">
-                    <span class="detail-label">Venue:</span>
-                    <span class="detail-value">{{ event.venue }}</span>
-                    <input type="text" class="edit-input" value="{{ event.venue }}" data-field="venue">
-                </div>
-                
-                <div class="detail-item">
-                    <span class="detail-label">Doors:</span>
-                    <span class="detail-value">{{ event.doors_time or 'Not specified' }}</span>
-                    <input type="time" class="edit-input" value="{{ event.doors_time }}" data-field="doors_time">
-                </div>
-                
-                <div class="detail-item">
-                    <span class="detail-label">Start:</span>
-                    <span class="detail-value">{{ event.start_time or 'Not specified' }}</span>
-                    <input type="time" class="edit-input" value="{{ event.start_time }}" data-field="start_time">
-                </div>
-                
-                <div class="detail-item">
-                    <span class="detail-label">Price:</span>
-                    <span class="detail-value {% if not event.price %}missing{% endif %}">
-                        {{ event.price or 'Not specified' }}
-                    </span>
-                    <input type="text" class="edit-input" value="{{ event.price or '' }}" data-field="price">
-                </div>
-                
-                <div class="detail-item">
-                    <span class="detail-label">Genre:</span>
-                    <span class="detail-value {% if not event.genre %}missing{% endif %}">
-                        {{ event.genre or 'Not specified' }}
-                    </span>
-                    <select class="edit-input" data-field="genre">
-                        <option value="">Not specified</option>
-                        <option value="Rock" {% if event.genre == 'Rock' %}selected{% endif %}>Rock</option>
-                        <option value="Hip Hop" {% if event.genre == 'Hip Hop' %}selected{% endif %}>Hip Hop</option>
-                        <option value="Jazz" {% if event.genre == 'Jazz' %}selected{% endif %}>Jazz</option>
-                        <option value="Country" {% if event.genre == 'Country' %}selected{% endif %}>Country</option>
-                        <option value="Electronic" {% if event.genre == 'Electronic' %}selected{% endif %}>Electronic</option>
-                        <option value="Blues" {% if event.genre == 'Blues' %}selected{% endif %}>Blues</option>
-                        <option value="Comedy" {% if event.genre == 'Comedy' %}selected{% endif %}>Comedy</option>
-                        <option value="Indie" {% if event.genre == 'Indie' %}selected{% endif %}>Indie</option>
-                        <option value="Metal" {% if event.genre == 'Metal' %}selected{% endif %}>Metal</option>
-                        <option value="Punk" {% if event.genre == 'Punk' %}selected{% endif %}>Punk</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="notes-field">
-                <label style="font-weight: bold; color: #666; display: block; margin-bottom: 5px;">Notes:</label>
-                <textarea class="notes-input" placeholder="Add any notes or corrections...">{{ event.notes or '' }}</textarea>
-            </div>
-            
-            <div class="actions">
-                <button class="approve" data-action="approve">✓ Approve</button>
-                <button class="edit" data-action="edit">✎ Edit</button>
-                <button class="reject" data-action="reject">✗ Reject</button>
-            </div>
-        </div>
-        {% endfor %}
+        <div class="loading">Loading events...</div>
     </div>
     
     <div class="keyboard-hint hidden" id="keyboard-hints">
@@ -472,8 +558,225 @@
     </div>
 
     <script>
-        const eventsData = {{ events | tojson }};
+        let allEvents = [];
+        let filteredEvents = [];
         let focusedCardIndex = 0;
+        let keyProcessing = false;
+        
+        // Load initial data
+        async function init() {
+            await loadVenuesAndGenres();
+            await applyFilters();
+        }
+        
+        async function loadVenuesAndGenres() {
+            // Load venues
+            const venuesResp = await fetch('/api/venues');
+            const venuesData = await venuesResp.json();
+            const venueSelect = document.getElementById('filter-venue');
+            venuesData.venues.forEach(venue => {
+                const option = document.createElement('option');
+                option.value = venue;
+                option.textContent = venue;
+                venueSelect.appendChild(option);
+            });
+            
+            // Load genres
+            const genresResp = await fetch('/api/genres');
+            const genresData = await genresResp.json();
+            const genreSelect = document.getElementById('filter-genre');
+            genresData.genres.forEach(genre => {
+                const option = document.createElement('option');
+                option.value = genre;
+                option.textContent = genre;
+                genreSelect.appendChild(option);
+            });
+        }
+        
+        async function applyFilters() {
+            const filters = {
+                search: document.getElementById('filter-search').value,
+                status: document.getElementById('filter-status').value,
+                venue: document.getElementById('filter-venue').value,
+                genre: document.getElementById('filter-genre').value,
+                confidence_level: document.getElementById('filter-confidence').value === 'all' ? null : document.getElementById('filter-confidence').value,
+                date_from: document.getElementById('filter-date-from').value,
+                date_to: document.getElementById('filter-date-to').value,
+                has_duplicates: document.getElementById('filter-special').value === 'duplicates',
+                missing_data: document.getElementById('filter-special').value === 'missing',
+                sort_by: document.getElementById('sort-by').value,
+                sort_order: document.getElementById('sort-order').value
+            };
+            
+            document.getElementById('events-container').innerHTML = '<div class="loading">Loading events...</div>';
+            
+            const response = await fetch('/api/filter_events', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(filters)
+            });
+            
+            const data = await response.json();
+            filteredEvents = data.events;
+            
+            renderEvents(filteredEvents);
+            updateStats(filteredEvents);
+        }
+        
+        function renderEvents(events) {
+            const container = document.getElementById('events-container');
+            
+            if (events.length === 0) {
+                container.innerHTML = `
+                    <div class="no-results">
+                        <div class="no-results-icon">🔍</div>
+                        <h3>No events found</h3>
+                        <p>Try adjusting your filters</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            events.forEach((event, index) => {
+                const confidenceBadge = event.overall_confidence >= 0.8 ? 'confidence-high' :
+                                       event.overall_confidence >= 0.5 ? 'confidence-medium' : 'confidence-low';
+                const confidenceText = event.overall_confidence >= 0.8 ? 'High Confidence' :
+                                      event.overall_confidence >= 0.5 ? 'Medium Confidence' : 'Low Confidence';
+                
+                const statusBadge = event.status === 'approved' ? 'status-approved' : 'status-pending';
+                const statusText = event.status === 'approved' ? 'Approved' : 'Pending Review';
+                
+                const cardClasses = [
+                    'event-card',
+                    event.overall_confidence < 0.6 ? 'low-confidence' : '',
+                    (event.duplicates.exact.length > 0 || event.duplicates.similar.length > 0) ? 'has-duplicates' : '',
+                    event.status === 'approved' ? 'approved' : ''
+                ].filter(Boolean).join(' ');
+                
+                html += `
+                    <div class="${cardClasses}" data-index="${index}" data-id="${event.id}">
+                        <div class="event-header">
+                            <div class="event-title-row">
+                                <input type="checkbox" class="event-checkbox" onchange="updateSelectedCount()">
+                                <div>
+                                    <span class="event-title">${event.name}</span>
+                                    <span class="event-id">#${event.id}</span>
+                                </div>
+                                <span class="status-badge ${statusBadge}">${statusText}</span>
+                                <span class="confidence-badge ${confidenceBadge}">${confidenceText}</span>
+                            </div>
+                        </div>
+                        
+                        ${event.duplicates.exact.length > 0 ? `
+                        <div class="duplicate-warning">
+                            <div class="duplicate-warning-title">⚠️ Potential Duplicate Detected</div>
+                            ${event.duplicates.exact.map(dup => `
+                                <div class="duplicate-item">
+                                    Similar to: ${dup.name} (${Math.round(dup.similarity * 100)}% match)
+                                </div>
+                            `).join('')}
+                        </div>
+                        ` : ''}
+                        
+                        <div class="event-details">
+                            <div class="detail-item">
+                                <span class="detail-label">Date:</span>
+                                <span class="detail-value">${event.date}</span>
+                                <input type="date" class="edit-input" value="${event.date}" data-field="date">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Venue:</span>
+                                <span class="detail-value">${event.venue}</span>
+                                <input type="text" class="edit-input" value="${event.venue}" data-field="venue">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Doors:</span>
+                                <span class="detail-value">${event.doors_time || 'Not specified'}</span>
+                                <input type="time" class="edit-input" value="${event.doors_time || ''}" data-field="doors_time">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Start:</span>
+                                <span class="detail-value">${event.start_time || 'Not specified'}</span>
+                                <input type="time" class="edit-input" value="${event.start_time || ''}" data-field="start_time">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Price:</span>
+                                <span class="detail-value ${!event.price ? 'missing' : ''}">${event.price || 'Not specified'}</span>
+                                <input type="text" class="edit-input" value="${event.price || ''}" data-field="price">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Genre:</span>
+                                <span class="detail-value ${!event.genre ? 'missing' : ''}">${event.genre || 'Not specified'}</span>
+                                <select class="edit-input" data-field="genre">
+                                    <option value="">Not specified</option>
+                                    <option value="Rock" ${event.genre === 'Rock' ? 'selected' : ''}>Rock</option>
+                                    <option value="Hip Hop" ${event.genre === 'Hip Hop' ? 'selected' : ''}>Hip Hop</option>
+                                    <option value="Jazz" ${event.genre === 'Jazz' ? 'selected' : ''}>Jazz</option>
+                                    <option value="Country" ${event.genre === 'Country' ? 'selected' : ''}>Country</option>
+                                    <option value="Electronic" ${event.genre === 'Electronic' ? 'selected' : ''}>Electronic</option>
+                                    <option value="Blues" ${event.genre === 'Blues' ? 'selected' : ''}>Blues</option>
+                                    <option value="Comedy" ${event.genre === 'Comedy' ? 'selected' : ''}>Comedy</option>
+                                    <option value="Indie" ${event.genre === 'Indie' ? 'selected' : ''}>Indie</option>
+                                    <option value="Metal" ${event.genre === 'Metal' ? 'selected' : ''}>Metal</option>
+                                    <option value="Punk" ${event.genre === 'Punk' ? 'selected' : ''}>Punk</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="notes-field">
+                            <label style="font-weight: bold; color: #666; display: block; margin-bottom: 5px;">Notes:</label>
+                            <div class="detail-value">${event.notes || 'No notes'}</div>
+                            <textarea class="notes-input edit-input">${event.notes || ''}</textarea>
+                        </div>
+                        
+                        <div class="actions">
+                            ${event.status === 'pending' ? `
+                                <button class="approve" data-action="approve">✓ Approve</button>
+                            ` : ''}
+                            <button class="edit" data-action="edit">✎ Edit</button>
+                            ${event.status === 'pending' ? `
+                                <button class="reject" data-action="reject">✗ Reject</button>
+                            ` : `
+                                <button class="delete" data-action="delete">🗑 Delete</button>
+                            `}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+        }
+        
+        function updateStats(events) {
+            document.getElementById('stat-total').textContent = events.length;
+            
+            const lowConfidence = events.filter(e => e.overall_confidence < 0.6).length;
+            document.getElementById('stat-low-confidence').textContent = lowConfidence;
+            
+            const duplicates = events.filter(e => e.duplicates.exact.length > 0 || e.duplicates.similar.length > 0).length;
+            document.getElementById('stat-duplicates').textContent = duplicates;
+        }
+        
+        function resetFilters() {
+            document.getElementById('filter-search').value = '';
+            document.getElementById('filter-status').value = 'pending';
+            document.getElementById('filter-venue').value = 'all';
+            document.getElementById('filter-genre').value = 'all';
+            document.getElementById('filter-confidence').value = 'all';
+            document.getElementById('filter-date-from').value = '';
+            document.getElementById('filter-date-to').value = '';
+            document.getElementById('filter-special').value = '';
+            document.getElementById('sort-by').value = 'date';
+            document.getElementById('sort-order').value = 'asc';
+            
+            applyFilters();
+        }
         
         // Event delegation
         document.addEventListener('click', function(e) {
@@ -489,6 +792,10 @@
                 approveEvent(card);
             } else if (action === 'reject') {
                 rejectEvent(card);
+            } else if (action === 'delete') {
+                if (confirm('Are you sure you want to delete this event?')) {
+                    deleteEvent(card);
+                }
             } else if (action === 'edit') {
                 toggleEditMode(card, button);
             } else if (action === 'save') {
@@ -499,77 +806,32 @@
             }
         });
         
-        // Keyboard shortcuts
-    let keyProcessing = false;  // Add debounce flag
-
-    document.addEventListener('keydown', function(e) {
-        // Don't trigger if typing in input/textarea
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        
-        // Prevent key repeat from triggering multiple times
-        if (keyProcessing) return;
-        
-        const cards = document.querySelectorAll('.event-card');
-        const currentCard = cards[focusedCardIndex];
-        
-        if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            focusedCardIndex = Math.min(focusedCardIndex + 1, cards.length - 1);
-            cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            cards[focusedCardIndex].style.outline = '2px solid #2196F3';
-            if (currentCard) currentCard.style.outline = '';
-        } else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            focusedCardIndex = Math.max(focusedCardIndex - 1, 0);
-            cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
-            cards[focusedCardIndex].style.outline = '2px solid #2196F3';
-            if (currentCard) currentCard.style.outline = '';
-        } else if (e.key === 'a' || e.key === 'A') {
-            e.preventDefault();
-            keyProcessing = true;
-            approveEvent(currentCard);
-            setTimeout(() => keyProcessing = false, 1000);  // Prevent rapid repeats
-        } else if (e.key === 'r' || e.key === 'R') {
-            e.preventDefault();
-            keyProcessing = true;
-            rejectEvent(currentCard);
-            setTimeout(() => keyProcessing = false, 1000);
-        } else if (e.key === 'e' || e.key === 'E') {
-            e.preventDefault();
-            const editButton = currentCard.querySelector('[data-action="edit"]');
-            toggleEditMode(currentCard, editButton);
-        } else if (e.key === ' ') {
-            e.preventDefault();
-            const checkbox = currentCard.querySelector('.event-checkbox');
-            checkbox.checked = !checkbox.checked;
-            updateSelectedCount();
-        }
-    });
-        
-        function getCardEventData(card) {
-            const originalIndex = parseInt(card.getAttribute('data-index'));
-            return {...eventsData[originalIndex]};
-        }
-        
         function toggleEditMode(card, button) {
             card.classList.add('edit-mode');
             button.dataset.action = 'save';
             button.textContent = '💾 Save';
         }
-
+        
+        function getCardEventData(card) {
+            const index = parseInt(card.dataset.index);
+            return filteredEvents[index];
+        }
+        
         function saveEdit(card) {
             const inputs = card.querySelectorAll('.edit-input');
             const notesInput = card.querySelector('.notes-input');
-            const eventData = getCardEventData(card);
+            const eventData = {...getCardEventData(card)};
             
             inputs.forEach(input => {
                 const field = input.dataset.field;
-                eventData[field] = input.value;
+                if (field) eventData[field] = input.value;
             });
             
             eventData.notes = notesInput.value;
             
-            fetch('/update', {
+            const endpoint = eventData.status === 'approved' ? '/update_published' : '/update';
+            
+            fetch(endpoint, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(eventData)
@@ -577,14 +839,19 @@
             .then(response => response.json())
             .then(data => {
                 card.style.background = '#e8f5e9';
-                setTimeout(() => card.remove(), 500);
+                setTimeout(() => {
+                    card.style.background = '';
+                    applyFilters(); // Refresh to show updated data
+                }, 1000);
             });
         }
         
         function approveEvent(card) {
-            const eventData = getCardEventData(card);
+            const eventData = {...getCardEventData(card)};
             const notesInput = card.querySelector('.notes-input');
-            eventData.notes = notesInput.value;
+            eventData.notes = notesInput ? notesInput.value : '';
+            
+            keyProcessing = true;
             
             fetch('/approve', {
                 method: 'POST',
@@ -595,94 +862,3 @@
             .then(data => {
                 card.style.background = '#e8f5e9';
                 setTimeout(() => card.remove(), 500);
-            });
-        }
-        
-        function rejectEvent(card) {
-            const eventData = getCardEventData(card);
-            
-            fetch('/reject', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(eventData)
-            })
-            .then(response => response.json())
-            .then(data => {
-                card.style.background = '#ffebee';
-                setTimeout(() => card.remove(), 500);
-            });
-        }
-        
-        function updateSelectedCount() {
-            const selected = document.querySelectorAll('.event-checkbox:checked').length;
-            document.getElementById('selected-count').textContent = selected;
-        }
-        
-        function toggleSelectAll() {
-            const selectAll = document.getElementById('select-all');
-            const checkboxes = document.querySelectorAll('.event-checkbox');
-            checkboxes.forEach(cb => cb.checked = selectAll.checked);
-            updateSelectedCount();
-        }
-        
-        function batchApprove() {
-            const selectedCards = Array.from(document.querySelectorAll('.event-card'))
-                .filter(card => card.querySelector('.event-checkbox').checked);
-            
-            if (selectedCards.length === 0) {
-                alert('No events selected');
-                return;
-            }
-            
-            const events = selectedCards.map(card => {
-                const eventData = getCardEventData(card);
-                const notesInput = card.querySelector('.notes-input');
-                eventData.notes = notesInput.value;
-                return eventData;
-            });
-            
-            fetch('/batch_approve', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({events})
-            })
-            .then(response => response.json())
-            .then(data => {
-                selectedCards.forEach(card => {
-                    card.style.background = '#e8f5e9';
-                    setTimeout(() => card.remove(), 500);
-                });
-            });
-        }
-        
-        function batchReject() {
-            const selectedCards = Array.from(document.querySelectorAll('.event-card'))
-                .filter(card => card.querySelector('.event-checkbox').checked);
-            
-            if (selectedCards.length === 0) {
-                alert('No events selected');
-                return;
-            }
-            
-            const events = selectedCards.map(card => getCardEventData(card));
-            
-            fetch('/batch_reject', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({events})
-            })
-            .then(response => response.json())
-            .then(data => {
-                selectedCards.forEach(card => {
-                    card.style.background = '#ffebee';
-                    setTimeout(() => card.remove(), 500);
-                });
-            });
-        }
-        
-        function toggleKeyboardHints() {
-            document.getElementById('keyboard-hints').classList.toggle('hidden');
-        }
-    </script>
-</body>
-</html>
