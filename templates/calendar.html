@@ -230,7 +230,10 @@
         const allEvents = {{ events | tojson }};
         
         function formatDate(dateStr) {
-            const date = new Date(dateStr);
+            // Parse as local date, not UTC
+            const [year, month, day] = dateStr.split('-');
+            const date = new Date(year, month - 1, day);
+            
             const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             
