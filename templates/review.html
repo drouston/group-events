@@ -861,4 +861,191 @@
             .then(response => response.json())
             .then(data => {
                 card.style.background = '#e8f5e9';
+                setTimeout(() => card.remove(), 500); //unsynced/uncommitted changes on github after line 864
+                setTimeout(() => keyProcessing = false, 1000);
+            }); 
+        }
+        
+        function rejectEvent(card) {
+            const eventData = getCardEventData(card);
+            
+            keyProcessing = true;
+            
+            fetch('/reject', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(eventData)
+            })
+            .then(response => response.json())
+            .then(data => {
+                card.style.background = '#ffebee';
                 setTimeout(() => card.remove(), 500);
+                setTimeout(() => keyProcessing = false, 1000);
+            });
+        }
+        
+        function deleteEvent(card) {
+            const eventId = card.dataset.id;
+            
+            fetch('/delete_published', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id: eventId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                card.style.background = '#ffebee';
+                setTimeout(() => card.remove(), 500);
+            });
+        }
+        
+        function updateSelectedCount() {
+            const selected = document.querySelectorAll('.event-checkbox:checked').length;
+            document.getElementById('selected-count').textContent = selected;
+        }
+        
+        function toggleSelectAll() {
+            const selectAll = document.getElementById('select-all');
+            const checkboxes = document.querySelectorAll('.event-checkbox');
+            checkboxes.forEach(cb => cb.checked = selectAll.checked);
+            updateSelectedCount();
+        }
+        
+        function batchApprove() {
+            const selectedCards = Array.from(document.querySelectorAll('.event-card'))
+                .filter(card => card.querySelector('.event-checkbox').checked);
+            
+            if (selectedCards.length === 0) {
+                alert('No events selected');
+                return;
+            }
+            
+            const events = selectedCards.map(card => {
+                const eventData = {...getCardEventData(card)};
+                const notesInput = card.querySelector('.notes-input');
+                eventData.notes = notesInput ? notesInput.value : '';
+                return eventData;
+            });
+            
+            fetch('/batch_approve', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({events})
+            })
+            .then(response => response.json())
+            .then(data => {
+                selectedCards.forEach(card => {
+                    card.style.background = '#e8f5e9';
+                    setTimeout(() => card.remove(), 500);
+                });
+            });
+        }
+        
+        function batchReject() {
+            const selectedCards = Array.from(document.querySelectorAll('.event-card'))
+                .filter(card => card.querySelector('.event-checkbox').checked);
+            
+            if (selectedCards.length === 0) {
+                alert('No events selected');
+                return;
+            }
+            
+            const events = selectedCards.map(card => getCardEventData(card));
+            
+            fetch('/batch_reject', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({events})
+            })
+            .then(response => response.json())
+            .then(data => {
+                selectedCards.forEach(card => {
+                    card.style.background = '#ffebee';
+                    setTimeout(() => card.remove(), 500);
+                });
+            });
+        }
+        
+        function batchDelete() {
+            const selectedCards = Array.from(document.querySelectorAll('.event-card'))
+                .filter(card => card.querySelector('.event-checkbox').checked);
+            
+            if (selectedCards.length === 0) {
+                alert('No events selected');
+                return;
+            }
+            
+            if (!confirm(`Delete ${selectedCards.length} events?`)) {
+                return;
+            }
+            
+            selectedCards.forEach(card => {
+                const eventId = card.dataset.id;
+                
+                fetch('/delete_published', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({id: eventId})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    card.style.background = '#ffebee';
+                    setTimeout(() => card.remove(), 500);
+                });
+            });
+        }
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(e) {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+            if (keyProcessing) return;
+            
+            const cards = document.querySelectorAll('.event-card');
+            const currentCard = cards[focusedCardIndex];
+            
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                focusedCardIndex = Math.min(focusedCardIndex + 1, cards.length - 1);
+                cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                cards[focusedCardIndex].style.outline = '2px solid #2196F3';
+                if (currentCard) currentCard.style.outline = '';
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                focusedCardIndex = Math.max(focusedCardIndex - 1, 0);
+                cards[focusedCardIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                cards[focusedCardIndex].style.outline = '2px solid #2196F3';
+                if (currentCard) currentCard.style.outline = '';
+            } else if (e.key === 'a' || e.key === 'A') {
+                e.preventDefault();
+                const approveBtn = currentCard.querySelector('[data-action="approve"]');
+                if (approveBtn) approveEvent(currentCard);
+            } else if (e.key === 'r' || e.key === 'R') {
+                e.preventDefault();
+                const rejectBtn = currentCard.querySelector('[data-action="reject"]');
+                if (rejectBtn) rejectEvent(currentCard);
+            } else if (e.key === 'e' || e.key === 'E') {
+                e.preventDefault();
+                const editButton = currentCard.querySelector('[data-action="edit"]');
+                if (editButton) toggleEditMode(currentCard, editButton);
+            } else if (e.key === ' ') {
+                e.preventDefault();
+                const checkbox = currentCard.querySelector('.event-checkbox');
+                checkbox.checked = !checkbox.checked;
+                updateSelectedCount();
+            }
+        });
+        
+        function toggleKeyboardHints() {
+            document.getElementById('keyboard-hints').classList.toggle('hidden');
+        }
+        
+        // Initialize on page load
+        init();
+        
+        // Auto-apply filters on Enter in search box
+        document.getElementById('filter-search').addEventListener('keyup', function(e) {
+            if (e.key === 'Enter') applyFilters();
+        });
+    </script>
+</body>
+</html>
