@@ -286,6 +286,9 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - date: YYYY-MM-DD format (use 2026 for dates without year)
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
+  IMPORTANT: If you see "8:00 PM" or "8pm", output "20:00" NOT "02:00"
+  If you see "7:30 PM", output "19:30" NOT "01:30"
+  DO NOT apply any timezone conversion. Keep times exactly as shown on the website.
 - venue: "{venue_name}" (see venue note below if present)
 - city: "{city}"
 - state: "{state}"
