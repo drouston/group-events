@@ -7,3 +7,4 @@ raw_page.html
 ticketmaster_events.json
 *.egg-info/
 .DS_Store
+gpt_events.json
