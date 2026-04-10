@@ -211,7 +211,7 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
 
 def extract_events_with_llm(page_text, venue_name, city, state):
     """Extract events using GPT"""
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-api-key-here')
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     # White Oak needs much more text
@@ -267,7 +267,7 @@ Return ONLY valid JSON with an "events" array."""
 
 def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None):
     """Extract events using GPT from text or HTML"""
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'your-api-key-here')
+    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     content_type = "HTML code" if is_html else "text"
