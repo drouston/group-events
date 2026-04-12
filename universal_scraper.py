@@ -31,6 +31,16 @@ def init_db():
                       description TEXT, genre TEXT, confidence TEXT,
                       notes TEXT, status TEXT DEFAULT 'pending',
                       created_at TEXT, approved_at TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS past_events
+                     (id SERIAL PRIMARY KEY, name TEXT, date TEXT,
+                      doors_time TEXT, start_time TEXT, venue TEXT,
+                      city TEXT, state TEXT, price TEXT, ticket_url TEXT,
+                      description TEXT, genre TEXT, confidence TEXT,
+                      notes TEXT, status TEXT, created_at TEXT,
+                      approved_at TEXT, archived_at TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS venue_cache
+                     (venue_key TEXT PRIMARY KEY, content_hash TEXT,
+                      last_scraped TEXT)''')
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date TEXT,
@@ -39,6 +49,16 @@ def init_db():
                       description TEXT, genre TEXT, confidence TEXT,
                       notes TEXT, status TEXT DEFAULT 'pending',
                       created_at TEXT, approved_at TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS past_events
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, date TEXT,
+                      doors_time TEXT, start_time TEXT, venue TEXT,
+                      city TEXT, state TEXT, price TEXT, ticket_url TEXT,
+                      description TEXT, genre TEXT, confidence TEXT,
+                      notes TEXT, status TEXT, created_at TEXT,
+                      approved_at TEXT, archived_at TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS venue_cache
+                     (venue_key TEXT PRIMARY KEY, content_hash TEXT,
+                      last_scraped TEXT)''')
     conn.commit()
     conn.close()
 
@@ -165,6 +185,74 @@ VENUES = {
         "scroll_count": 3
     }
 }
+
+def get_content_hash(content):
+    """Generate SHA256 hash of scraped content"""
+    import hashlib
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+def get_stored_hash(venue_key):
+    """Get the stored hash for a venue from venue_cache"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+    c.execute(f'SELECT content_hash FROM venue_cache WHERE venue_key = {ph}', (venue_key,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def update_stored_hash(venue_key, content_hash):
+    """Update or insert the hash for a venue in venue_cache"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    if DATABASE_URL:
+        c.execute('''INSERT INTO venue_cache (venue_key, content_hash, last_scraped)
+                     VALUES (%s, %s, %s)
+                     ON CONFLICT (venue_key) DO UPDATE
+                     SET content_hash = EXCLUDED.content_hash,
+                         last_scraped = EXCLUDED.last_scraped''',
+                  (venue_key, content_hash, now))
+    else:
+        c.execute('''INSERT OR REPLACE INTO venue_cache
+                     (venue_key, content_hash, last_scraped)
+                     VALUES (?, ?, ?)''',
+                  (venue_key, content_hash, now))
+    conn.commit()
+    conn.close()
+
+def check_canceled_events(venue_key, scraped_events):
+    """Compare scraped events against DB future events, flag missing as canceled"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+    venue_name = VENUES[venue_key]['name']
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # Get all future approved/pending events for this venue
+    c.execute(f'''SELECT id, name, date FROM events
+                 WHERE venue = {ph} AND date >= {ph}
+                 AND status IN ('approved', 'pending')''',
+              (venue_name, today))
+    db_events = c.fetchall()
+
+    # Build set of scraped event identifiers
+    scraped_set = set(
+        (e['name'].strip().lower(), e['date'])
+        for e in scraped_events
+    )
+
+    canceled_count = 0
+    for db_id, db_name, db_date in db_events:
+        if (db_name.strip().lower(), db_date) not in scraped_set:
+            c.execute(f'''UPDATE events SET status = 'canceled'
+                         WHERE id = {ph}''', (db_id,))
+            canceled_count += 1
+            print(f"  ⚠ Flagged as canceled: {db_name} on {db_date}")
+
+    conn.commit()
+    conn.close()
+    print(f"  {canceled_count} events flagged as canceled for {venue_name}")
 
 def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
     """Scrape a page using Selenium"""
@@ -406,24 +494,34 @@ def parse_white_oak_html(html):
     
     return {'events': events}
 
-def scrape_venue(venue_key):
-    """Scrape a single venue"""
+def scrape_venue(venue_key, mode='daily'):
+    """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
-    
+
     print(f"\n{'='*60}")
-    print(f"Scraping: {venue['name']}")
+    print(f"Scraping: {venue['name']} [{mode} mode]")
     print(f"{'='*60}")
-    
+
     debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
-    
+
     page_text, html = scrape_page(
-        venue['url'], 
+        venue['url'],
         wait_time=venue.get('wait_time', 3),
         debug=debug,
         scroll_count=scroll_count
     )
-    
+
+    # Hash check — skip LLM if content unchanged
+    content_hash = get_content_hash(page_text)
+    stored_hash = get_stored_hash(venue_key)
+
+    if content_hash == stored_hash:
+        print(f"  ↷ No changes detected, skipping LLM")
+        return []
+
+    print(f"  ✓ Content changed, processing with LLM")
+
     # Use custom parser for White Oak
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
@@ -436,88 +534,133 @@ def scrape_venue(venue_key):
             is_html=False,
             venue_instruction=venue.get('venue_instruction')
         )
-    
+
     events = events_data.get('events', [])
-    print(f"✓ Found {len(events)} events")
-    
+    print(f"  ✓ Found {len(events)} events")
+
+    # Weekly mode: check for canceled events
+    if mode == 'weekly':
+        check_canceled_events(venue_key, events)
+
+    # Update stored hash
+    update_stored_hash(venue_key, content_hash)
+
     return events
 
-def scrape_all_venues():
+def scrape_all_venues(mode='daily'):
     """Scrape all venues and combine results"""
     all_events = []
-    
+
     for venue_key in VENUES.keys():
         try:
-            events = scrape_venue(venue_key)
+            events = scrape_venue(venue_key, mode=mode)
             all_events.extend(events)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
-    
+
     return all_events
 
 def save_to_database(events):
-    """Save events directly to PostgreSQL database"""
-    DATABASE_URL = os.environ.get('DATABASE_URL')
-    
+    """Save events to database with exact and partial duplicate detection"""
+    from difflib import SequenceMatcher
+
     if not DATABASE_URL:
         print("No DATABASE_URL found - saving to JSON instead")
         with open('gpt_events.json', 'w') as f:
             json.dump({'events': events}, f, indent=2)
         return
-    
-    # Fix Railway's postgres:// URL
-    db_url = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    
-    import psycopg2
-    conn = psycopg2.connect(db_url)
+
+    conn = get_db_connection()
     c = conn.cursor()
-    
+    ph = '%s' if DATABASE_URL else '?'
+
     inserted = 0
     skipped = 0
-    
+    flagged = 0
+
     for event in events:
         try:
-            # Check for duplicates
-            c.execute('''SELECT id FROM events 
-                         WHERE name = %s AND date = %s AND venue = %s 
+            # Exact duplicate check: venue + name + date + start_time
+            c.execute(f'''SELECT id FROM events
+                         WHERE name = {ph} AND date = {ph}
+                         AND venue = {ph} AND start_time = {ph}
                          LIMIT 1''',
-                      (event['name'], event['date'], event['venue']))
-            
+                      (event['name'], event['date'], event['venue'],
+                       event.get('start_time')))
+
             if c.fetchone():
                 skipped += 1
+                print(f"  ⊘ Exact duplicate skipped: {event['name']}")
                 continue
-            
-            # Insert event as pending for review
-            c.execute('''INSERT INTO events 
+
+            # Partial duplicate check: same venue + date, similar name (>80%)
+            c.execute(f'''SELECT id, name FROM events
+                         WHERE venue = {ph} AND date = {ph}
+                         AND status NOT IN ('rejected', 'canceled')''',
+                      (event['venue'], event['date']))
+            existing = c.fetchall()
+
+            status = 'pending'
+            for ex_id, ex_name in existing:
+                similarity = SequenceMatcher(
+                    None, event['name'].lower(), ex_name.lower()
+                ).ratio()
+                if similarity >= 0.8:
+                    status = 'possible_duplicate'
+                    print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
+                          f"{event['name']} ~ {ex_name}")
+                    flagged += 1
+                    break
+
+            # Insert event
+            c.execute(f'''INSERT INTO events
                          (name, date, doors_time, start_time, venue, city, state,
                           price, ticket_url, description, genre, confidence, status, created_at)
-                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
+                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                       (event['name'], event['date'], event.get('doors_time'),
-                       event.get('start_time'), event['venue'], event['city'], event['state'],
-                       event.get('price'), event.get('ticket_url'), event.get('description'),
-                       event.get('genre'), json.dumps(event.get('confidence', {})),
-                       'pending', datetime.now().isoformat()))
+                       event.get('start_time'), event['venue'], event.get('city', ''),
+                       event.get('state', ''), event.get('price'), event.get('ticket_url'),
+                       event.get('description'), event.get('genre'),
+                       json.dumps(event.get('confidence', {})),
+                       status, datetime.now().isoformat()))
             inserted += 1
-            
+
         except Exception as e:
             print(f"Error inserting {event['name']}: {e}")
-    
+
     conn.commit()
     conn.close()
-    
+
     print(f"\n{'='*60}")
-    print(f"✓ Inserted {inserted} new events into database")
-    print(f"⊘ Skipped {skipped} duplicates")
+    print(f"✓ Inserted {inserted} new events")
+    print(f"⚠ Flagged {flagged} possible duplicates")
+    print(f"⊘ Skipped {skipped} exact duplicates")
     print(f"{'='*60}")
 
 if __name__ == "__main__":
-    print("=== Houston Music Events Scraper ===\n")
-    
-    all_events = scrape_all_venues()
-    
-    # Save to database instead of JSON
-    save_to_database(all_events)
-    
+    import argparse
+    parser = argparse.ArgumentParser(description='Houston Music Events Scraper')
+    parser.add_argument('--mode', choices=['daily', 'weekly'], default='daily',
+                        help='Scrape mode: daily (new events) or weekly (full + canceled check)')
+    parser.add_argument('--venue', type=str, default=None,
+                        help='Scrape a single venue by key (e.g. white_oak)')
+    args = parser.parse_args()
+
+    print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
+
+    init_db()
+
+    if args.venue:
+        if args.venue not in VENUES:
+            print(f"✗ Unknown venue key: {args.venue}")
+            print(f"  Available: {', '.join(VENUES.keys())}")
+        else:
+            events = scrape_venue(args.venue, mode=args.mode)
+            save_to_database(events)
+    else:
+        all_events = scrape_all_venues(mode=args.mode)
+        save_to_database(all_events)
+
     print(f"\n{'='*60}")
-    print(f"✓ Total events scraped: {len(all_events)}")
+    print(f"✓ Scrape complete")
     print(f"{'='*60}")

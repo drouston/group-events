@@ -478,17 +478,32 @@ def api_events():
     
     return jsonify({'events': [dict(zip([col[0] for col in c.description], row)) for row in events]})
 
+def do_approve_event(event_data):
+    conn = get_db_connection()
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    if DATABASE_URL:
+        c.execute('''UPDATE events SET status = 'approved', approved_at = %s
+                     WHERE id = %s''',
+                  (now, event_data['id']))
+    else:
+        c.execute('''UPDATE events SET status = 'approved', approved_at = ?
+                     WHERE id = ?''',
+                  (now, event_data['id']))
+    conn.commit()
+    conn.close()
+
 @app.route('/approve', methods=['POST'])
 def approve_event():
     event_data = request.json
-    save_event(event_data)
+    do_approve_event(event_data)
     return jsonify({'status': 'success'})
 
 @app.route('/batch_approve', methods=['POST'])
 def batch_approve():
     events_data = request.json.get('events', [])
     for event_data in events_data:
-        save_event(event_data)
+        do_approve_event(event_data)
     return jsonify({'status': 'success', 'count': len(events_data)})
 
 @app.route('/batch_reject', methods=['POST'])
