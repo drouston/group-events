@@ -70,9 +70,11 @@ def save_event_to_db(event):
 
     # Skip if exact duplicate already exists
     c.execute(f'''SELECT id FROM events
-                 WHERE name = {ph} AND date = {ph} AND venue = {ph}
-                 AND status = 'approved' LIMIT 1''',
-              (event['name'], event['date'], event['venue']))
+                         WHERE name = {ph} AND date = {ph}
+                         AND venue = {ph} AND start_time = {ph}
+                         LIMIT 1''',
+                      (event['name'], event['date'], event['venue'],
+                       event.get('start_time')))
     if c.fetchone():
         print(f"  Duplicate skipped: {event['name']}")
         conn.close()
@@ -109,7 +111,8 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
-        "scroll_count": 10  # Scroll 10 times to load all events
+        "scroll_count": 10,
+        "venue_instruction": "Extract all events. For each event, populate the 'location' field with the specific area: 'Downstairs', 'Upstairs', or 'Lawn'. If no area is specified, use null."
     },
     "heights_theater": {
         "name": "Heights Theater",
@@ -155,26 +158,13 @@ VENUES = {
         "state": "TX",
         "wait_time": 6
     },
-    "house_of_blues_main": {
+    "house_of_blues": {
         "name": "House of Blues Houston",
         "url": "https://houston.houseofblues.com/shows",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 5
-    },
-    "house_of_blues_peacock": {
-        "name": "House of Blues Houston - The Bronze Peacock",
-        "url": "https://houston.houseofblues.com/shows/rooms/the-bronze-peacock",
-        "city": "Houston",
-        "state": "TX",
-        "wait_time": 5
-    },
-    "house_of_blues_foundation": {
-        "name": "House of Blues Houston - The Foundation Room",
-        "url": "https://houston.houseofblues.com/shows/rooms/foundation-room",
-        "city": "Houston",
-        "state": "TX",
-        "wait_time": 5
+        "wait_time": 5,
+        "venue_instruction": "Extract all events. For each event, populate the 'location' field with the specific room: 'Main Stage', 'Bronze Peacock', or 'Foundation Room'. If no room is specified, use 'Main Stage'."
     },
     "smart_financial": {
         "name": "Smart Financial Centre",
@@ -333,6 +323,7 @@ Extract ALL events from the provided text into a JSON array. For each event:
 - ticket_url: Full URL if present
 - description: Brief description if available
 - genre: Music genre/category if discernible
+- location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
 - confidence: Object with field-level confidence scores (0-1)
 
 IMPORTANT: Look carefully for event times. They may appear as:
@@ -383,8 +374,9 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - price: Extract if mentioned
 - ticket_url: Full URL if present
 - description: Brief description
-- genre: Music genre if discernible
-- confidence: Field-level confidence scores
+- genre: Music genre/category if discernible
+- location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
+- confidence: Object with field-level confidence scores (0-1)
 {venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
 
@@ -614,12 +606,13 @@ def save_to_database(events):
 
             # Insert event
             c.execute(f'''INSERT INTO events
-                         (name, date, doors_time, start_time, venue, city, state,
+                         (name, date, doors_time, start_time, venue, location, city, state,
                           price, ticket_url, description, genre, confidence, status, created_at)
-                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                       (event['name'], event['date'], event.get('doors_time'),
-                       event.get('start_time'), event['venue'], event.get('city', ''),
-                       event.get('state', ''), event.get('price'), event.get('ticket_url'),
+                       event.get('start_time'), event['venue'], event.get('location'),
+                       event.get('city', ''), event.get('state', ''),
+                       event.get('price'), event.get('ticket_url'),
                        event.get('description'), event.get('genre'),
                        json.dumps(event.get('confidence', {})),
                        status, datetime.now().isoformat()))

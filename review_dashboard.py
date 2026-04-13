@@ -94,7 +94,7 @@ def load_pending_events():
     c = conn.cursor()
     
     if DATABASE_URL:
-        c.execute('''SELECT id, name, date, doors_time, start_time, venue, city, state,
+        c.execute('''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
                      price, ticket_url, description, genre, confidence, notes
                      FROM events WHERE status = 'pending' ORDER BY date ASC''')
     else:
@@ -115,14 +115,15 @@ def load_pending_events():
             'doors_time': row[3],
             'start_time': row[4],
             'venue': row[5],
-            'city': row[6],
-            'state': row[7],
-            'price': row[8],
-            'ticket_url': row[9],
-            'description': row[10],
-            'genre': row[11],
-            'confidence': json.loads(row[12]) if row[12] else {},
-            'notes': row[13] or ''
+            'location': row[6],
+            'city': row[7],
+            'state': row[8],
+            'price': row[9],
+            'ticket_url': row[10],
+            'description': row[11],
+            'genre': row[12],
+            'confidence': json.loads(row[13]) if row[13] else {},
+            'notes': row[14] or ''
         })
     
     conn.close()
@@ -538,7 +539,7 @@ def filter_events():
     c = conn.cursor()
     
     # Base query
-    query = '''SELECT id, name, date, doors_time, start_time, venue, city, state,
+    query = '''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
                price, ticket_url, description, genre, confidence, notes, status, created_at
                FROM events WHERE 1=1'''
     params = []
@@ -623,16 +624,17 @@ def filter_events():
             'doors_time': row[3],
             'start_time': row[4],
             'venue': row[5],
-            'city': row[6],
-            'state': row[7],
-            'price': row[8],
-            'ticket_url': row[9],
-            'description': row[10],
-            'genre': row[11],
-            'confidence': json.loads(row[12]) if row[12] else {},
-            'notes': row[13],
-            'status': row[14],
-            'created_at': row[15]
+            'location': row[6],
+            'city': row[7],
+            'state': row[8],
+            'price': row[9],
+            'ticket_url': row[10],
+            'description': row[11],
+            'genre': row[12],
+            'confidence': json.loads(row[13]) if row[13] else {},
+            'notes': row[14],
+            'status': row[15],
+            'created_at': row[16]
         }
         
         # Calculate overall confidence

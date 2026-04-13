@@ -351,8 +351,8 @@
             display: none;
         }
 
-        input:not(.event-checkbox):not([type="date"]):not([type="time"]):not([type="text"][class*="filter"]),
-        select:not(.filter-group select) {
+        input.edit-input,
+        select.edit-input {
             display: none;
         }
         
@@ -694,6 +694,12 @@
                                 <span class="detail-label">Venue:</span>
                                 <span class="detail-value">${event.venue}</span>
                                 <input type="text" class="edit-input" value="${event.venue}" data-field="venue">
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Location:</span>
+                                <span class="detail-value ${!event.location ? 'missing' : ''}">${event.location || 'Not specified'}</span>
+                                <input type="text" class="edit-input" value="${event.location || ''}" data-field="location">
                             </div>
                             
                             <div class="detail-item">
