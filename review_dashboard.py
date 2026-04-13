@@ -511,24 +511,57 @@ def batch_approve():
         do_approve_event(event_data)
     return jsonify({'status': 'success', 'count': len(events_data)})
 
+def do_reject_event(event_data):
+    conn = get_db_connection()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute('UPDATE events SET status = %s WHERE id = %s',
+                  ('rejected', event_data['id']))
+    else:
+        c.execute('UPDATE events SET status = ? WHERE id = ?',
+                  ('rejected', event_data['id']))
+    conn.commit()
+    conn.close()
+
+def do_update_event(event_data):
+    conn = get_db_connection()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute('''UPDATE events SET name=%s, date=%s, doors_time=%s, start_time=%s,
+                     venue=%s, location=%s, price=%s, genre=%s, notes=%s
+                     WHERE id=%s''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data.get('location'),
+                   event_data.get('price'), event_data.get('genre'),
+                   event_data.get('notes', ''), event_data['id']))
+    else:
+        c.execute('''UPDATE events SET name=?, date=?, doors_time=?, start_time=?,
+                     venue=?, location=?, price=?, genre=?, notes=?
+                     WHERE id=?''',
+                  (event_data['name'], event_data['date'], event_data.get('doors_time'),
+                   event_data.get('start_time'), event_data['venue'], event_data.get('location'),
+                   event_data.get('price'), event_data.get('genre'),
+                   event_data.get('notes', ''), event_data['id']))
+    conn.commit()
+    conn.close()
+
 @app.route('/batch_reject', methods=['POST'])
 def batch_reject():
     events_data = request.json.get('events', [])
     for event_data in events_data:
-        print(f"Rejected: {event_data['name']}")
+        do_reject_event(event_data)
     return jsonify({'status': 'success', 'count': len(events_data)})
 
 @app.route('/reject', methods=['POST'])
 def reject_event():
-    event_name = request.json.get('name')
-    print(f"Rejected: {event_name}")
+    event_data = request.json
+    do_reject_event(event_data)
     return jsonify({'status': 'success'})
 
 @app.route('/update', methods=['POST'])
 def update_event():
     event_data = request.json
-    save_event(event_data)
-    return jsonify({'status': 'success'})
+    do_update_event(event_data)
 
 @app.route('/api/filter_events', methods=['POST'])
 def filter_events():
