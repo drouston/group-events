@@ -8,6 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 from openai import OpenAI
+import anthropic
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
@@ -287,27 +288,72 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
     finally:
         driver.quit()
 
-def extract_events_with_llm(page_text, venue_name, city, state):
-    """Extract events using GPT"""
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-    client = OpenAI(api_key=OPENAI_API_KEY)
+def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
+    """Route LLM request to the appropriate provider"""
+    if llm == 'gpt4o':
+        client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        return json.loads(response.choices[0].message.content)
 
-    # White Oak needs much more text
+    elif llm == 'gpt4o-mini':
+        client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        return json.loads(response.choices[0].message.content)
+
+    elif llm == 'claude':
+        client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            temperature=0,
+            system=system_prompt + "\nReturn ONLY valid JSON with an 'events' array, no other text.",
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        text = response.content[0].text.strip()
+        text = text.replace('```json', '').replace('```', '').strip()
+        return json.loads(text)
+
+    elif llm == 'groq':
+        from groq import Groq
+        client = Groq(api_key=os.environ.get('GROQ_API_KEY'))
+        response = client.chat.completions.create(
+            model="llama-3.1-70b-versatile",
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        return json.loads(response.choices[0].message.content)
+
+    else:
+        raise ValueError(f"Unknown LLM provider: {llm}")
+
+def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'):
+    """Extract events using LLM"""
     if "White Oak" in venue_name:
-        char_limit = 100000  # GPT-4o can handle this
+        char_limit = 100000
     else:
         char_limit = 20000
     
-    # ... rest of function stays the same
-    
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": f"""You are an expert at extracting structured event data from venue websites.
-
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites.
 Extract ALL events from the provided text into a JSON array. For each event:
 - name: Full event name/title
 - date: YYYY-MM-DD format (use 2026 for dates without year)
@@ -325,41 +371,22 @@ Extract ALL events from the provided text into a JSON array. For each event:
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
 - confidence: Object with field-level confidence scores (0-1)
-
 IMPORTANT: Look carefully for event times. They may appear as:
 - "6:30pm" or "7:00pm"
 - "Doors: 7pm, Show: 8pm"
 - Times listed separately from event names
 - Pay special attention to any numbers followed by "pm" or "am"
-
 Return ONLY valid JSON with an "events" array."""
-            },
-            {
-                "role": "user",
-                "content": f"Extract events from this page:\n\n{page_text[:char_limit]}"
-            }
-        ],
-        response_format={"type": "json_object"}
-    )
-    
-    return json.loads(response.choices[0].message.content)
 
-def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None):
-    """Extract events using GPT from text or HTML"""
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    user_prompt = f"Extract events from this page:\n\n{page_text[:char_limit]}"
+    return get_llm_response(system_prompt, user_prompt, llm=llm)
 
+def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None, llm='gpt4o-mini'):
+    """Extract events using LLM from text or HTML"""
     content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        temperature=0,
-        messages=[
-            {
-                "role": "system",
-                "content": f"""You are an expert at extracting structured event data from venue websites.
-
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites.
 Extract ALL events from the provided {content_type} into a JSON array. For each event:
 - name: Full event name/title
 - date: YYYY-MM-DD format (use 2026 for dates without year)
@@ -379,18 +406,10 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - confidence: Object with field-level confidence scores (0-1)
 {venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
-
 Return ONLY valid JSON with an "events" array containing ALL events found."""
-            },
-            {
-                "role": "user",
-                "content": f"Extract all events:\n\n{content}"
-            }
-        ],
-        response_format={"type": "json_object"}
-    )
 
-    return json.loads(response.choices[0].message.content)
+    user_prompt = f"Extract all events:\n\n{content}"
+    return get_llm_response(system_prompt, user_prompt, llm=llm)
 
 def parse_white_oak_html(html):
     """Parse White Oak events directly from HTML"""
@@ -486,7 +505,7 @@ def parse_white_oak_html(html):
     
     return {'events': events}
 
-def scrape_venue(venue_key, mode='daily'):
+def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
 
@@ -522,7 +541,8 @@ def scrape_venue(venue_key, mode='daily'):
             venue['city'],
             venue['state'],
             is_html=False,
-            venue_instruction=venue.get('venue_instruction')
+            venue_instruction=venue.get('venue_instruction'),
+            llm=llm
         )
 
     events = events_data.get('events', [])
@@ -537,13 +557,13 @@ def scrape_venue(venue_key, mode='daily'):
 
     return events
 
-def scrape_all_venues(mode='daily'):
+def scrape_all_venues(mode='daily', llm='gpt4o-mini'):
     """Scrape all venues and combine results"""
     all_events = []
 
     for venue_key in VENUES.keys():
         try:
-            events = scrape_venue(venue_key, mode=mode)
+            events = scrape_venue(venue_key, mode=mode, llm=llm)
             all_events.extend(events)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
@@ -646,6 +666,10 @@ if __name__ == "__main__":
                         help='Auto-approve events (use with onboard for trusted venues)')
     parser.add_argument('--venue', type=str, default=None,
                         help='Scrape a single venue by key (e.g. white_oak)')
+    parser.add_argument('--llm', choices=['gpt4o', 'gpt4o-mini', 'claude', 'groq'], default='gpt4o-mini',
+                        help='LLM provider to use for extraction')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Extract and print events without writing to DB')
     args = parser.parse_args()
 
     print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
@@ -658,10 +682,31 @@ if __name__ == "__main__":
             print(f"  Available: {', '.join(VENUES.keys())}")
         else:
             events = scrape_venue(args.venue, mode=args.mode)
-            save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
+            if args.dry_run:
+                print(f"\n{'='*60}")
+                print(f"DRY RUN — {len(events)} events extracted, not saved")
+                for e in events:
+                    print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                print(f"{'='*60}")
+            else:
+                if args.dry_run:
+                    print(f"\n{'='*60}")
+                    print(f"DRY RUN — {len(events)} events extracted, not saved")
+                    for e in events:
+                        print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                    print(f"{'='*60}")
+                else:
+                    save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
     else:
         all_events = scrape_all_venues(mode=args.mode)
-        save_to_database(all_events, mode=args.mode, auto_approve=args.auto_approve)
+        if args.dry_run:
+            print(f"\n{'='*60}")
+            print(f"DRY RUN — {len(events)} events extracted, not saved")
+            for e in events:
+                print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+            print(f"{'='*60}")
+        else:
+            save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
 
     print(f"\n{'='*60}")
     print(f"✓ Scrape complete")
