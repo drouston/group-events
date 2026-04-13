@@ -128,19 +128,21 @@ def load_pending_events():
     return events
 
 # Check for duplicates
-def find_duplicates(event_name, event_date, event_venue):
+def find_duplicates(event_name, event_date, event_venue, event_id=None):
     conn = get_db_connection()
     c = conn.cursor()
     
     # Check exact match
     if DATABASE_URL:
         c.execute('''SELECT id, name, date, venue FROM events 
-                    WHERE status NOT IN ('rejected', 'canceled')
-                    AND date = %s AND venue = %s''', (event_date, event_venue))
+                     WHERE status NOT IN ('rejected', 'canceled')
+                     AND date = %s AND venue = %s
+                     AND id != %s''', (event_date, event_venue, event_id or 0))
     else:
         c.execute('''SELECT id, name, date, venue FROM events 
-                    WHERE status NOT IN ('rejected', 'canceled')
-                    AND date = ? AND venue = ?''', (event_date, event_venue))
+                     WHERE status NOT IN ('rejected', 'canceled')
+                     AND date = ? AND venue = ?
+                     AND id != ?''', (event_date, event_venue, event_id or 0))
     
     exact_matches = []
     similar_matches = []
@@ -343,7 +345,8 @@ def index():
         event['duplicates'] = find_duplicates(
             event['name'], 
             event['date'], 
-            event['venue']
+            event['venue'],
+            event['id']
         )
         event['overall_confidence'] = calculate_confidence(event)
     
@@ -635,7 +638,7 @@ def filter_events():
         event['overall_confidence'] = calculate_confidence(event)
         
         # Check for duplicates
-        event['duplicates'] = find_duplicates(event['name'], event['date'], event['venue'])
+        event['duplicates'] = find_duplicates(event['name'], event['date'], event['venue'], event['id'])
         
         events.append(event)
     
