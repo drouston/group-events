@@ -504,14 +504,12 @@ def scrape_venue(venue_key, mode='daily'):
         scroll_count=scroll_count
     )
 
-    # Hash check — skip LLM if content unchanged
+    # Hash check — skip LLM if content unchanged (not for onboard mode)
     content_hash = get_content_hash(page_text)
     stored_hash = get_stored_hash(venue_key)
-
-    if content_hash == stored_hash:
+    if mode != 'onboard' and content_hash == stored_hash:
         print(f"  ↷ No changes detected, skipping LLM")
         return []
-
     print(f"  ✓ Content changed, processing with LLM")
 
     # Use custom parser for White Oak
@@ -530,7 +528,7 @@ def scrape_venue(venue_key, mode='daily'):
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
 
-    # Weekly mode: check for canceled events
+    # Weekly mode: check for canceled events (skip for onboard)
     if mode == 'weekly':
         check_canceled_events(venue_key, events)
 
@@ -552,9 +550,18 @@ def scrape_all_venues(mode='daily'):
 
     return all_events
 
-def save_to_database(events):
+def save_to_database(events, mode='daily', auto_approve=False):
     """Save events to database with exact and partial duplicate detection"""
     from difflib import SequenceMatcher
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # Onboard mode: filter out past events
+    if mode == 'onboard':
+        before = len(events)
+        events = [e for e in events if e.get('date', '') >= today]
+        filtered = before - len(events)
+        if filtered:
+            print(f"  ↷ Filtered {filtered} past events")
 
     if not DATABASE_URL:
         print("No DATABASE_URL found - saving to JSON instead")
@@ -592,7 +599,7 @@ def save_to_database(events):
                       (event['venue'], event['date']))
             existing = c.fetchall()
 
-            status = 'pending'
+            status = 'approved' if auto_approve else 'pending'
             for ex_id, ex_name in existing:
                 similarity = SequenceMatcher(
                     None, event['name'].lower(), ex_name.lower()
@@ -633,8 +640,10 @@ def save_to_database(events):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Houston Music Events Scraper')
-    parser.add_argument('--mode', choices=['daily', 'weekly'], default='daily',
-                        help='Scrape mode: daily (new events) or weekly (full + canceled check)')
+    parser.add_argument('--mode', choices=['daily', 'weekly', 'onboard'], default='daily',
+                        help='Scrape mode: daily, weekly, or onboard (new venue full scrape)')
+    parser.add_argument('--auto-approve', action='store_true',
+                        help='Auto-approve events (use with onboard for trusted venues)')
     parser.add_argument('--venue', type=str, default=None,
                         help='Scrape a single venue by key (e.g. white_oak)')
     args = parser.parse_args()
@@ -649,10 +658,10 @@ if __name__ == "__main__":
             print(f"  Available: {', '.join(VENUES.keys())}")
         else:
             events = scrape_venue(args.venue, mode=args.mode)
-            save_to_database(events)
+            save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
     else:
         all_events = scrape_all_venues(mode=args.mode)
-        save_to_database(all_events)
+        save_to_database(all_events, mode=args.mode, auto_approve=args.auto_approve)
 
     print(f"\n{'='*60}")
     print(f"✓ Scrape complete")
