@@ -94,7 +94,7 @@ def load_pending_events():
     c = conn.cursor()
     
     if DATABASE_URL:
-        c.execute('''SELECT name, date, doors_time, start_time, venue, city, state,
+        c.execute('''SELECT id, name, date, doors_time, start_time, venue, city, state,
                      price, ticket_url, description, genre, confidence, notes
                      FROM events WHERE status = 'pending' ORDER BY date ASC''')
     else:
@@ -109,19 +109,20 @@ def load_pending_events():
     events = []
     for row in c.fetchall():
         events.append({
-            'name': row[0],
-            'date': row[1],
-            'doors_time': row[2],
-            'start_time': row[3],
-            'venue': row[4],
-            'city': row[5],
-            'state': row[6],
-            'price': row[7],
-            'ticket_url': row[8],
-            'description': row[9],
-            'genre': row[10],
-            'confidence': json.loads(row[11]) if row[11] else {},
-            'notes': row[12] or ''
+            'id': row[0],
+            'name': row[1],
+            'date': row[2],
+            'doors_time': row[3],
+            'start_time': row[4],
+            'venue': row[5],
+            'city': row[6],
+            'state': row[7],
+            'price': row[8],
+            'ticket_url': row[9],
+            'description': row[10],
+            'genre': row[11],
+            'confidence': json.loads(row[12]) if row[12] else {},
+            'notes': row[13] or ''
         })
     
     conn.close()
