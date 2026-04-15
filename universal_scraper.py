@@ -698,15 +698,15 @@ if __name__ == "__main__":
                 else:
                     save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
     else:
-        all_events = scrape_all_venues(mode=args.mode)
+        all_events = scrape_all_venues(mode=args.mode, llm=args.llm)
         if args.dry_run:
             print(f"\n{'='*60}")
-            print(f"DRY RUN — {len(events)} events extracted, not saved")
-            for e in events:
+            print(f"DRY RUN — {len(all_events)} events extracted, not saved")
+            for e in all_events:
                 print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
             print(f"{'='*60}")
         else:
-            save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
+            save_to_database(all_events, mode=args.mode, auto_approve=args.auto_approve)
 
     print(f"\n{'='*60}")
     print(f"✓ Scrape complete")
