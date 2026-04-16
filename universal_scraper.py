@@ -174,7 +174,35 @@ VENUES = {
         "state": "TX",
         "wait_time": 6,
         "scroll_count": 3
-    }
+    },
+    "bayou_music_center": {
+        "name": "Bayou Music Center",
+        "url": "https://www.bayoumusiccenter.com/shows",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 8,
+        "scroll_count": 5
+    },
+    "improv_tx": {
+        "name": "Improv Houston",
+        "url": "https://improvtx.com/calendar/-/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 1,
+        "paginated": True,
+        "next_page_selector": "#moreshowsbtn",
+        "page_param": "start",
+        "venue_instruction": "This page covers multiple Texas Improv locations. Only extract events for 'Houston Improv' — ignore Addison Improv, Arlington Improv, LOL San Antonio and any other locations. Set venue to 'Improv Houston' and city to 'Houston' for all extracted events. CRITICAL: When an event spans multiple nights (e.g. 'Apr 17-18 Fri-Sat' or 'Apr 24-26 Fri-Sun'), you MUST create a SEPARATE event entry for EACH individual night. For example 'Apr 17-18' = two events: one on 2026-04-17 AND one on 2026-04-18.",
+    },
+    "riot_comedy": {
+        "name": "The Riot Comedy Club",
+        "url": "https://theriothtx.com/headlining-comedians-at-the-riot-comedy-club-in-houston-texas/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 2
+    },
 }
 
 def get_content_hash(content):
@@ -516,12 +544,49 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
 
-    page_text, html = scrape_page(
-        venue['url'],
-        wait_time=venue.get('wait_time', 3),
-        debug=debug,
-        scroll_count=scroll_count
-    )
+    # Handle paginated venues
+    if venue.get('paginated') and venue.get('page_param'):
+        combined_text = ''
+        current_url = venue['url']
+        page_num = 1
+        max_pages = 10  # Safety limit
+
+        while current_url and page_num <= max_pages:
+            print(f"  Fetching page {page_num}: {current_url}")
+            page_text, html = scrape_page(
+                current_url,
+                wait_time=venue.get('wait_time', 3),
+                debug=debug,
+                scroll_count=scroll_count
+            )
+            combined_text += '\n' + page_text
+
+            # Look for next page link
+            soup = BeautifulSoup(html, 'html.parser')
+            next_link = soup.find('a', id='moreshowsbtn')
+            if next_link and next_link.get('href'):
+                href = next_link['href']
+                # Build full URL if relative
+                if href.startswith('?'):
+                    base = venue['url'].split('?')[0]
+                    current_url = base + href
+                else:
+                    current_url = href
+                page_num += 1
+            else:
+                break
+
+        page_text = combined_text
+        html = ''  # Not needed after pagination
+        print(f"  ✓ Fetched {page_num} pages, {len(page_text)} total characters")
+
+    else:
+        page_text, html = scrape_page(
+            venue['url'],
+            wait_time=venue.get('wait_time', 3),
+            debug=debug,
+            scroll_count=scroll_count
+        )
 
     # Hash check — skip LLM if content unchanged (not for onboard mode)
     content_hash = get_content_hash(page_text)
@@ -535,8 +600,9 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
     else:
+        char_limit = 60000 if venue.get('paginated') else 20000
         events_data = extract_events_with_llm_raw(
-            page_text[:20000],
+            page_text[:char_limit],
             venue['name'],
             venue['city'],
             venue['state'],
@@ -548,7 +614,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
 
-    # Weekly mode: check for canceled events (skip for onboard)
+    # Weekly mode: check for canceled events
     if mode == 'weekly':
         check_canceled_events(venue_key, events)
 
