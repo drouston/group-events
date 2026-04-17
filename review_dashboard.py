@@ -95,7 +95,7 @@ def load_pending_events():
     
     if DATABASE_URL:
         c.execute('''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
-                     price, ticket_url, description, genre, confidence, notes
+                     price, ticket_url, description, genre, confidence, notes, event_type, visible
                      FROM events WHERE status = 'pending' ORDER BY date ASC''')
     else:
         # Fallback to JSON for local development
@@ -123,7 +123,9 @@ def load_pending_events():
             'description': row[11],
             'genre': row[12],
             'confidence': json.loads(row[13]) if row[13] else {},
-            'notes': row[14] or ''
+            'notes': row[14] or '',
+            'event_type': row[15] or 'music',
+            'visible': row[16] if row[16] is not None else True
         })
     
     conn.close()
@@ -413,24 +415,24 @@ def stats():
 def calendar():
     conn = get_db_connection()
     c = conn.cursor()
-
     today = datetime.now().date().isoformat()
-
     if DATABASE_URL:
-        c.execute('''SELECT name, date, doors_time, start_time, venue, city,
-                     price, genre, description
+        c.execute('''SELECT name, date, doors_time, start_time, venue, location, city,
+                     price, genre, description, event_type
                      FROM events
                      WHERE status = 'approved'
+                     AND visible = true
                      AND date >= %s
                      ORDER BY date ASC''', (today,))
     else:
-        c.execute('''SELECT name, date, doors_time, start_time, venue, city,
-                     price, genre, description
+        c.execute('''SELECT name, date, doors_time, start_time, venue, location, city,
+                     price, genre, description, event_type
                      FROM events
                      WHERE status = 'approved'
+                     AND visible = 1
                      AND date >= ?
                      ORDER BY date ASC''', (today,))
-    
+
     events = []
     for row in c.fetchall():
         events.append({
@@ -439,15 +441,21 @@ def calendar():
             'doors_time': row[2],
             'start_time': row[3],
             'venue': row[4],
-            'city': row[5],
-            'price': row[6],
-            'genre': row[7],
-            'description': row[8]
+            'location': row[5],
+            'city': row[6],
+            'price': row[7],
+            'genre': row[8],
+            'description': row[9],
+            'event_type': row[10]
         })
-    
+
     conn.close()
-    
-    return render_template('calendar.html', events=events)
+
+    # Build dynamic venue and genre lists from events
+    venues = sorted(set(e['venue'] for e in events if e['venue']))
+    genres = sorted(set(e['genre'] for e in events if e['genre']))
+
+    return render_template('calendar.html', events=events, venues=venues, genres=genres)
 
 @app.route('/api/events')
 def api_events():
@@ -528,20 +536,24 @@ def do_update_event(event_data):
     c = conn.cursor()
     if DATABASE_URL:
         c.execute('''UPDATE events SET name=%s, date=%s, doors_time=%s, start_time=%s,
-                     venue=%s, location=%s, price=%s, genre=%s, notes=%s
+                     venue=%s, location=%s, price=%s, genre=%s, notes=%s,
+                     event_type=%s, visible=%s
                      WHERE id=%s''',
                   (event_data['name'], event_data['date'], event_data.get('doors_time'),
                    event_data.get('start_time'), event_data['venue'], event_data.get('location'),
                    event_data.get('price'), event_data.get('genre'),
-                   event_data.get('notes', ''), event_data['id']))
+                   event_data.get('notes', ''), event_data.get('event_type', 'music'),
+                   event_data.get('visible', True), event_data['id']))
     else:
         c.execute('''UPDATE events SET name=?, date=?, doors_time=?, start_time=?,
-                     venue=?, location=?, price=?, genre=?, notes=?
+                     venue=?, location=?, price=?, genre=?, notes=?,
+                     event_type=?, visible=?
                      WHERE id=?''',
                   (event_data['name'], event_data['date'], event_data.get('doors_time'),
                    event_data.get('start_time'), event_data['venue'], event_data.get('location'),
                    event_data.get('price'), event_data.get('genre'),
-                   event_data.get('notes', ''), event_data['id']))
+                   event_data.get('notes', ''), event_data.get('event_type', 'music'),
+                   event_data.get('visible', True), event_data['id']))
     conn.commit()
     conn.close()
 
@@ -573,7 +585,8 @@ def filter_events():
     
     # Base query
     query = '''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
-               price, ticket_url, description, genre, confidence, notes, status, created_at
+               price, ticket_url, description, genre, confidence, notes, status, created_at,
+               event_type, visible
                FROM events WHERE 1=1'''
     params = []
     
@@ -667,7 +680,9 @@ def filter_events():
             'confidence': json.loads(row[13]) if row[13] else {},
             'notes': row[14],
             'status': row[15],
-            'created_at': row[16]
+            'created_at': row[16],
+            'event_type': row[17] or 'music',
+            'visible': row[18] if row[18] is not None else True
         }
         
         # Calculate overall confidence

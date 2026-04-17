@@ -398,6 +398,7 @@ Extract ALL events from the provided text into a JSON array. For each event:
 - description: Brief description if available
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
+- event_type: Classify the event as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
 - confidence: Object with field-level confidence scores (0-1)
 IMPORTANT: Look carefully for event times. They may appear as:
 - "6:30pm" or "7:00pm"
@@ -431,6 +432,7 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
+- event_type: Classify the event as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
 - confidence: Object with field-level confidence scores (0-1)
 {venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
@@ -686,6 +688,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
             existing = c.fetchall()
 
             status = 'approved' if auto_approve else 'pending'
+            event_type = event.get('event_type', 'music')
+            visible = event_type in ('music', 'comedy')
             for ex_id, ex_name in existing:
                 similarity = SequenceMatcher(
                     None, event['name'].lower(), ex_name.lower()
@@ -700,15 +704,17 @@ def save_to_database(events, mode='daily', auto_approve=False):
             # Insert event
             c.execute(f'''INSERT INTO events
                          (name, date, doors_time, start_time, venue, location, city, state,
-                          price, ticket_url, description, genre, confidence, status, created_at)
-                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                          price, ticket_url, description, genre, confidence, status, created_at,
+                          event_type, visible)
+                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                       (event['name'], event['date'], event.get('doors_time'),
                        event.get('start_time'), event['venue'], event.get('location'),
                        event.get('city', ''), event.get('state', ''),
                        event.get('price'), event.get('ticket_url'),
                        event.get('description'), event.get('genre'),
                        json.dumps(event.get('confidence', {})),
-                       status, datetime.now().isoformat()))
+                       status, datetime.now().isoformat(),
+                       event_type, visible))
             inserted += 1
 
         except Exception as e:

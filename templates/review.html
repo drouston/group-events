@@ -703,6 +703,28 @@
                             </div>
                             
                             <div class="detail-item">
+                                <span class="detail-label">Event Type:</span>
+                                <span class="detail-value">${event.event_type || 'music'}</span>
+                                <select class="edit-input" data-field="event_type">
+                                    <option value="music" ${event.event_type === 'music' ? 'selected' : ''}>Music</option>
+                                    <option value="comedy" ${event.event_type === 'comedy' ? 'selected' : ''}>Comedy</option>
+                                    <option value="open_mic" ${event.event_type === 'open_mic' ? 'selected' : ''}>Open Mic</option>
+                                    <option value="happy_hour" ${event.event_type === 'happy_hour' ? 'selected' : ''}>Happy Hour</option>
+                                    <option value="private_event" ${event.event_type === 'private_event' ? 'selected' : ''}>Private Event</option>
+                                    <option value="other" ${event.event_type === 'other' ? 'selected' : ''}>Other</option>
+                                </select>
+                            </div>
+                            
+                            <div class="detail-item">
+                                <span class="detail-label">Visible:</span>
+                                <span class="detail-value">${event.visible ? 'Yes' : 'No'}</span>
+                                <select class="edit-input" data-field="visible">
+                                    <option value="true" ${event.visible ? 'selected' : ''}>Yes</option>
+                                    <option value="false" ${!event.visible ? 'selected' : ''}>No</option>
+                                </select>
+                            </div>
+                            
+                            <div class="detail-item">
                                 <span class="detail-label">Doors:</span>
                                 <span class="detail-value">${event.doors_time || 'Not specified'}</span>
                                 <input type="time" class="edit-input" value="${event.doors_time || ''}" data-field="doors_time">
