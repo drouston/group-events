@@ -342,8 +342,7 @@
             display: none;
         }
         
-        .edit-mode input,
-        .edit-mode select {
+        .edit-mode .edit-input {
             display: block;
         }
         
@@ -723,7 +722,7 @@
                                     <option value="false" ${!event.visible ? 'selected' : ''}>No</option>
                                 </select>
                             </div>
-                            
+
                             <div class="detail-item">
                                 <span class="detail-label">Doors:</span>
                                 <span class="detail-value">${event.doors_time || 'Not specified'}</span>

@@ -690,6 +690,9 @@ def save_to_database(events, mode='daily', auto_approve=False):
             status = 'approved' if auto_approve else 'pending'
             event_type = event.get('event_type', 'music')
             visible = event_type in ('music', 'comedy')
+            # Auto-assign genre from event_type if not set
+            if not event.get('genre') and event_type == 'comedy':
+                event['genre'] = 'Comedy'
             for ex_id, ex_name in existing:
                 similarity = SequenceMatcher(
                     None, event['name'].lower(), ex_name.lower()
