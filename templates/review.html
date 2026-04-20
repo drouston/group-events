@@ -191,6 +191,11 @@
             color: #e65100;
         }
         
+        .status-duplicate {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        
         .status-approved {
             background: #e8f5e9;
             color: #2e7d32;
@@ -428,6 +433,8 @@
                     <option value="all">All Events</option>
                     <option value="pending" selected>Pending Review</option>
                     <option value="approved">Approved</option>
+                    <option value="possible_duplicate">Possible Duplicates</option>
+                    <option value="canceled">Canceled</option>
                 </select>
             </div>
             
@@ -647,8 +654,11 @@
                 const confidenceText = event.overall_confidence >= 0.8 ? 'High Confidence' :
                                       event.overall_confidence >= 0.5 ? 'Medium Confidence' : 'Low Confidence';
                 
-                const statusBadge = event.status === 'approved' ? 'status-approved' : 'status-pending';
-                const statusText = event.status === 'approved' ? 'Approved' : 'Pending Review';
+                const statusBadge = event.status === 'approved' ? 'status-approved' : 
+                                    event.status === 'possible_duplicate' ? 'status-duplicate' : 'status-pending';
+                const statusText = event.status === 'approved' ? 'Approved' : 
+                                   event.status === 'possible_duplicate' ? 'Possible Duplicate' :
+                                   event.status === 'canceled' ? 'Canceled' : 'Pending Review';
                 
                 const cardClasses = [
                     'event-card',
@@ -671,7 +681,7 @@
                             </div>
                         </div>
                         
-                        ${event.duplicates.exact.length > 0 ? `
+                        ${event.duplicates.exact.length > 0 && event.status !== 'approved' ? `
                         <div class="duplicate-warning">
                             <div class="duplicate-warning-title">⚠️ Potential Duplicate Detected</div>
                             ${event.duplicates.exact.map(dup => `

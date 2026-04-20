@@ -323,6 +323,7 @@ def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
         response = client.chat.completions.create(
             model="gpt-4o",
             temperature=0,
+            max_tokens=16000,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -336,6 +337,7 @@ def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
+            max_tokens=16000,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -481,9 +483,16 @@ def parse_white_oak_html(html):
             # Assume 2026 for now (you can make this smarter)
             date = f"2026-{month_num}-{day.zfill(2)}"
             
-            # Extract venue (Upstairs/Downstairs/Lawn)
+            # Extract location (Upstairs/Downstairs/Lawn)
             venue_elem = section.find('span', class_='tw-venue-name')
-            venue_detail = venue_elem.text.strip() if venue_elem else "White Oak Music Hall"
+            venue_detail = venue_elem.text.strip() if venue_elem else None
+            # Strip venue name prefix if present
+            if venue_detail and ' - ' in venue_detail:
+                location = venue_detail.split(' - ', 1)[1].strip()
+            elif venue_detail and venue_detail.startswith('White Oak Music Hall '):
+                location = venue_detail.replace('White Oak Music Hall ', '').strip()
+            else:
+                location = None
             
             # Extract ticket URL
             ticket_link = section.find('a', class_='tw-buy-tix-btn')
@@ -513,7 +522,8 @@ def parse_white_oak_html(html):
                 'date': date,
                 'doors_time': None,
                 'start_time': start_time,
-                'venue': venue_detail,
+                'venue': 'White Oak Music Hall',
+                'location': location,
                 'city': 'Houston',
                 'state': 'TX',
                 'price': None,
@@ -534,6 +544,50 @@ def parse_white_oak_html(html):
             continue
     
     return {'events': events}
+
+def pre_filter_dates(venue_name, page_text):
+    """Extract and log new dates found on page vs DB - informational only"""
+    import re
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    month_map = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
+        'may': '05', 'jun': '06', 'jul': '07', 'aug': '08',
+        'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
+        'january': '01', 'february': '02', 'march': '03', 'april': '04',
+        'june': '06', 'july': '07', 'august': '08', 'september': '09',
+        'october': '10', 'november': '11', 'december': '12'
+    }
+
+    found_dates = set()
+    for match in re.finditer(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec\w*)\s+(\d{1,2})',
+                              page_text.lower()):
+        month_str = match.group(1)[:3]
+        day = match.group(2).zfill(2)
+        month_num = month_map.get(month_str)
+        if month_num:
+            date = f"2026-{month_num}-{day}"
+            if date < today:
+                date = f"2027-{month_num}-{day}"
+            found_dates.add(date)
+
+    if not found_dates:
+        conn.close()
+        return
+
+    c.execute(f'''SELECT DISTINCT date FROM events
+                 WHERE venue = {ph} AND date >= {ph}
+                 AND status NOT IN ('rejected', 'canceled')''',
+              (venue_name, today))
+    db_dates = set(row[0] for row in c.fetchall())
+    conn.close()
+
+    new_dates = found_dates - db_dates
+    if new_dates:
+        print(f"  ℹ {len(new_dates)} potentially new date(s) detected")
 
 def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     """Scrape a single venue with hash checking and mode support"""
@@ -598,18 +652,24 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
         return []
     print(f"  ✓ Content changed, processing with LLM")
 
+    print(f"  ✓ Content changed, processing with LLM")
+
+    # Log new dates detected (informational)
+    pre_filter_dates(venue['name'], page_text)
+
     # Use custom parser for White Oak
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
     else:
         char_limit = 60000 if venue.get('paginated') else 20000
+        venue_instruction = venue.get('venue_instruction', '')
         events_data = extract_events_with_llm_raw(
             page_text[:char_limit],
             venue['name'],
             venue['city'],
             venue['state'],
             is_html=False,
-            venue_instruction=venue.get('venue_instruction'),
+            venue_instruction=venue_instruction,
             llm=llm
         )
 
