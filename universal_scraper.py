@@ -480,9 +480,6 @@ def parse_white_oak_html(html):
             }
             month_num = month_map.get(month, '01')
             
-            # Assume 2026 for now (you can make this smarter)
-            date = f"2026-{month_num}-{day.zfill(2)}"
-            
             # Extract location (Upstairs/Downstairs/Lawn)
             venue_elem = section.find('span', class_='tw-venue-name')
             venue_detail = venue_elem.text.strip() if venue_elem else None
@@ -494,9 +491,21 @@ def parse_white_oak_html(html):
             else:
                 location = None
             
-            # Extract ticket URL
+            # Extract ticket URL and year if available
             ticket_link = section.find('a', class_='tw-buy-tix-btn')
+            # Also check image link for year
+            image_link = section.find('a', attrs={'aria-label': True})
             ticket_url = ticket_link['href'] if ticket_link else None
+
+            # Try to extract year from any link href
+            year = str(datetime.now().year)
+            for link in section.find_all('a', href=True):
+                year_match = re.search(r'[-/](20\d{2})(?:[-/]|$)', link['href'])
+                if year_match:
+                    year = year_match.group(1)
+                    break
+
+            date = f"{year}-{month_num}-{day.zfill(2)}"
             
             # Try to extract time from ticket URL or other elements
             # Time might be in the aria-label or title
