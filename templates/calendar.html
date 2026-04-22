@@ -367,14 +367,8 @@
                 if (event.date > todayStr) return true;
                 if (event.date < todayStr) return false;
 
-                // Today: keep if no start_time, or if within 2 hrs of start
-                if (!event.start_time) return true;
-
-                const [hours, minutes] = event.start_time.split(':').map(Number);
-                const eventStart = new Date(now);
-                eventStart.setHours(hours, minutes, 0, 0);
-                const cutoff = new Date(eventStart.getTime() + 2 * 60 * 60 * 1000);
-                return now < cutoff;
+                // Today: keep until midnight regardless of start time
+                return true;
             });
         }
 
