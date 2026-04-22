@@ -806,6 +806,54 @@ def save_to_database(events, mode='daily', auto_approve=False):
     print(f"⊘ Skipped {skipped} exact duplicates")
     print(f"{'='*60}")
 
+def archive_past_events(buffer_days=1):
+    """Move approved past events to past_events table"""
+    if not DATABASE_URL:
+        print("No DATABASE_URL — skipping archive (local dev)")
+        return
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    cutoff = (datetime.now() - timedelta(days=buffer_days)).strftime('%Y-%m-%d')
+
+    print(f"\n{'='*60}")
+    print(f"Archiving events before {cutoff}...")
+
+    c.execute('''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
+                 price, ticket_url, description, genre, confidence, notes, status,
+                 created_at, approved_at, event_type, visible, sold_out, date_changed,
+                 openers, event_url
+                 FROM events
+                 WHERE status = 'approved' AND date < %s''', (cutoff,))
+
+    rows = c.fetchall()
+    archived_at = datetime.now().isoformat()
+    archived = 0
+
+    for row in rows:
+        try:
+            c.execute('''INSERT INTO past_events
+                         (name, date, doors_time, start_time, venue, location, city, state,
+                          price, ticket_url, description, genre, confidence, notes, status,
+                          created_at, approved_at, archived_at, event_type, visible, sold_out,
+                          date_changed, openers, event_url)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                      (row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8],
+                       row[9], row[10], row[11], row[12], row[13], row[14], row[15],
+                       row[16], row[17], archived_at, row[18], row[19], row[20],
+                       row[21], row[22], row[23]))
+
+            c.execute('DELETE FROM events WHERE id = %s', (row[0],))
+            archived += 1
+        except Exception as e:
+            print(f"  ✗ Error archiving {row[1]}: {e}")
+
+    conn.commit()
+    conn.close()
+    print(f"✓ Archived {archived} past events")
+    print(f"{'='*60}")
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Houston Music Events Scraper')
@@ -824,6 +872,10 @@ if __name__ == "__main__":
     print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
 
     init_db()
+
+    # Archive past events on weekly run
+    if args.mode == 'weekly':
+        archive_past_events(buffer_days=1)
 
     if args.venue:
         if args.venue not in VENUES:
