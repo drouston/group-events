@@ -8,3 +8,4 @@ ticketmaster_events.json
 *.egg-info/
 .DS_Store
 gpt_events.json
+seed_test_data.py

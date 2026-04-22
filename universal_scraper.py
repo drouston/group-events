@@ -774,19 +774,24 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     break
 
             # Insert event
+            # Insert event
             c.execute(f'''INSERT INTO events
-                         (name, date, doors_time, start_time, venue, location, city, state,
-                          price, ticket_url, description, genre, confidence, status, created_at,
-                          event_type, visible)
-                         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
-                      (event['name'], event['date'], event.get('doors_time'),
-                       event.get('start_time'), event['venue'], event.get('location'),
-                       event.get('city', ''), event.get('state', ''),
-                       event.get('price'), event.get('ticket_url'),
-                       event.get('description'), event.get('genre'),
-                       json.dumps(event.get('confidence', {})),
-                       status, datetime.now().isoformat(),
-                       event_type, visible))
+                        (name, date, doors_time, start_time, venue, location, city, state,
+                        price, ticket_url, event_url, description, genre, confidence, status, created_at,
+                        event_type, visible, sold_out, date_changed, openers)
+                        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                    (event['name'], event['date'], event.get('doors_time'),
+                    event.get('start_time'), event['venue'], event.get('location'),
+                    event.get('city', ''), event.get('state', ''),
+                    event.get('price'), event.get('ticket_url'),
+                    event.get('event_url'),
+                    event.get('description'), event.get('genre'),
+                    json.dumps(event.get('confidence', {})),
+                    status, datetime.now().isoformat(),
+                    event_type, visible,
+                    event.get('sold_out', False),
+                    event.get('date_changed', False),
+                    event.get('openers')))
             inserted += 1
 
         except Exception as e:

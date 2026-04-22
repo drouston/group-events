@@ -124,11 +124,15 @@
         }
         
         .event-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             font-size: 14px;
             color: #666;
+        }
+
+        .event-detail {
+            flex: 0 0 auto;
         }
         
         .event-detail {
@@ -288,14 +292,21 @@
                 dayEvents.forEach(event => {
                     const doorsTime = formatTime(event.doors_time);
                     const startTime = formatTime(event.start_time);
-                    
+                    const eventLink = event.event_url || event.ticket_url || null;
+                    const eventName = eventLink
+                        ? `<a href="${eventLink}" target="_blank" style="color: inherit; text-decoration: none; border-bottom: 1px solid #999;">${event.name}</a>`
+                        : event.name;
+                    const priceDisplay = event.sold_out
+                        ? `<span style="color: #c62828; font-weight: 600;">Sold Out</span>`
+                        : event.price;
+
                     html += `
                         <div class="event-card">
-                            <div class="event-name">${event.name}</div>
+                            <div class="event-name">${eventName}</div>
                             <div class="event-details">
                                 <div class="event-detail">
                                     <span class="event-detail-icon">📍</span>
-                                    <span>${event.venue}</span>
+                                    <span>${event.venue}${event.location ? ' · ' + event.location : ''}</span>
                                 </div>
                                 ${startTime ? `
                                 <div class="event-detail">
@@ -303,10 +314,10 @@
                                     <span>${doorsTime ? 'Doors: ' + doorsTime + ', ' : ''}Show: ${startTime}</span>
                                 </div>
                                 ` : ''}
-                                ${event.price ? `
+                                ${priceDisplay ? `
                                 <div class="event-detail">
                                     <span class="event-detail-icon">💵</span>
-                                    <span>${event.price}</span>
+                                    <span>${priceDisplay}</span>
                                 </div>
                                 ` : ''}
                             </div>

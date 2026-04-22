@@ -200,6 +200,24 @@
             background: #e8f5e9;
             color: #2e7d32;
         }
+
+        .badge-sold-out {
+            background: #ffebee;
+            color: #c62828;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-date-changed {
+            background: #e3f2fd;
+            color: #1565c0;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
         
         .confidence-badge {
             padding: 4px 12px;
@@ -435,6 +453,7 @@
                     <option value="approved">Approved</option>
                     <option value="possible_duplicate">Possible Duplicates</option>
                     <option value="canceled">Canceled</option>
+                    <option value="date_changed">Date Changed</option>
                 </select>
             </div>
             
@@ -676,9 +695,10 @@
                                     <span class="event-title">${event.name}</span>
                                     <span class="event-id">#${event.id}</span>
                                 </div>
-                                <span class="status-badge ${statusBadge}">${statusText}</span>
-                                <span class="confidence-badge ${confidenceBadge}">${confidenceText}</span>
-                            </div>
+                                    <span class="status-badge ${statusBadge}">${statusText}</span>
+                                    <span class="confidence-badge ${confidenceBadge}">${confidenceText}</span>
+                                    ${event.sold_out ? `<span class="badge-sold-out">🔴 Sold Out</span>` : ''}
+                                    ${event.date_changed ? `<span class="badge-date-changed">📅 Date Changed</span>` : ''}                            </div>
                         </div>
                         
                         ${event.duplicates.exact.length > 0 && event.status !== 'approved' ? `
