@@ -2,7 +2,7 @@ import os
 import json
 import time
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -416,10 +416,17 @@ def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False,
     """Extract events using LLM from text or HTML"""
     content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
-
     system_prompt = f"""You are an expert at extracting structured event data from venue websites.
 Extract ALL events from the provided {content_type} into a JSON array. For each event:
-- name: Full event name/title
+
+TITLE CLEANUP (apply before setting name):
+- Remove prefixes like [Date Changed], (New Date), [Rescheduled], (Postponed) — but set date_changed: true if found
+- Remove (Sold Out), [Sold Out] — but set sold_out: true if found
+- Remove trailing venue references such as '...at The Big Top', '...Headlines the Riot HTX', '...at White Oak Music Hall', or any '...at/presented by/headlines [venue name]' suffix
+- The name field should contain only the artist or event name, clean and minimal
+
+Fields to extract:
+- name: Clean event name/title (see TITLE CLEANUP above)
 - date: YYYY-MM-DD format (use 2026 for dates without year)
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
@@ -429,17 +436,20 @@ Extract ALL events from the provided {content_type} into a JSON array. For each 
 - venue: "{venue_name}" (see venue note below if present)
 - city: "{city}"
 - state: "{state}"
-- price: Extract if mentioned
-- ticket_url: Full URL if present
+- price: Extract if mentioned, otherwise null
+- ticket_url: Full URL to ticketing page if present, otherwise null
+- event_url: Full URL to the event's own detail page if present (distinct from ticket URL), otherwise null
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
-- event_type: Classify the event as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
+- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
+- sold_out: true if event is sold out, false otherwise
+- date_changed: true if event has been rescheduled or date changed, false otherwise
+- openers: Comma-separated list of opening acts if mentioned, otherwise null
 - confidence: Object with field-level confidence scores (0-1)
 {venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
 Return ONLY valid JSON with an "events" array containing ALL events found."""
-
     user_prompt = f"Extract all events:\n\n{content}"
     return get_llm_response(system_prompt, user_prompt, llm=llm)
 
