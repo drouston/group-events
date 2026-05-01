@@ -423,7 +423,9 @@ TITLE CLEANUP (apply before setting name):
 - Remove prefixes like [Date Changed], (New Date), [Rescheduled], (Postponed) — but set date_changed: true if found
 - Remove (Sold Out), [Sold Out] — but set sold_out: true if found
 - Remove trailing venue references such as '...at The Big Top', '...Headlines the Riot HTX', '...at White Oak Music Hall', or any '...at/presented by/headlines [venue name]' suffix
-- The name field should contain only the artist or event name, clean and minimal
+- Keep opener/supporting act names in the title if they appear there (e.g. 'Headliner and Opener') 
+  — do NOT strip them from name, put them in openers field AS WELL but keep the full title intact
+- Do NOT otherwise modify or shorten the event name
 
 Fields to extract:
 - name: Clean event name/title (see TITLE CLEANUP above)
@@ -748,11 +750,12 @@ def save_to_database(events, mode='daily', auto_approve=False):
         try:
             # Exact duplicate check: venue + name + date + start_time
             c.execute(f'''SELECT id FROM events
-                         WHERE name = {ph} AND date = {ph}
-                         AND venue = {ph} AND start_time = {ph}
-                         LIMIT 1''',
-                      (event['name'], event['date'], event['venue'],
-                       event.get('start_time')))
+                        WHERE name = {ph} AND date = {ph}
+                        AND venue = {ph}
+                        AND (start_time = {ph} OR (start_time IS NULL AND {ph} IS NULL))
+                        LIMIT 1''',
+                    (event['name'], event['date'], event['venue'],
+                    event.get('start_time'), event.get('start_time')))
 
             if c.fetchone():
                 skipped += 1
