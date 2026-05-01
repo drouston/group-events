@@ -337,7 +337,7 @@ def delete_published():
     
     return jsonify({'status': 'success'})
 
-@app.route('/')
+@app.route('/dashboard-uinizti3')
 def index():
     events = load_pending_events()
     
@@ -408,7 +408,7 @@ def stats():
         'genres': genre_counts
     })
 
-@app.route('/calendar')
+@app.route('/')
 def calendar():
     conn = get_db_connection()
     c = conn.cursor()

@@ -616,7 +616,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     print(f"Scraping: {venue['name']} [{mode} mode]")
     print(f"{'='*60}")
 
-    debug = venue_key in ['white_oak']
+    debug = venue_key in ['white_oak', 'continental_club']
     scroll_count = venue.get('scroll_count', 1)
 
     # Handle paginated venues
