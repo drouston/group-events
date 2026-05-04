@@ -731,8 +731,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
             # Partial duplicate check: same venue + date, similar name (>80%)
             c.execute(f'''SELECT id, name FROM events
-                         WHERE venue = {ph} AND date = {ph}
-                         AND status NOT IN ('rejected', 'canceled')''',
+                         WHERE venue = {ph} AND date = {ph}''',
                       (event['venue'], event['date']))
             existing = c.fetchall()
 
