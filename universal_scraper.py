@@ -64,39 +64,6 @@ def init_db():
     conn.close()
 
 
-def save_event_to_db(event):
-    conn = get_db_connection()
-    c = conn.cursor()
-    ph = '%s' if DATABASE_URL else '?'
-
-    # Skip if exact duplicate already exists
-    c.execute(f'''SELECT id FROM events
-                         WHERE name = {ph} AND date = {ph}
-                         AND venue = {ph} AND start_time = {ph}
-                         LIMIT 1''',
-                      (event['name'], event['date'], event['venue'],
-                       event.get('start_time')))
-    if c.fetchone():
-        print(f"  Duplicate skipped: {event['name']}")
-        conn.close()
-        return False
-
-    now = datetime.now().isoformat()
-    c.execute(f'''INSERT INTO events
-                 (name, date, doors_time, start_time, venue, city, state,
-                  price, ticket_url, description, genre, confidence, notes,
-                  status, created_at, approved_at)
-                 VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
-              (event['name'], event['date'], event.get('doors_time'),
-               event.get('start_time'), event['venue'], event.get('city', ''),
-               event.get('state', ''), event.get('price'), event.get('ticket_url'),
-               event.get('description'), event.get('genre'),
-               json.dumps(event.get('confidence', {})),
-               event.get('notes', ''), 'approved', now, now))
-    conn.commit()
-    conn.close()
-    return True
-
 # Venue configurations
 VENUES = {
     "bad_astronaut": {
@@ -779,7 +746,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 similarity = SequenceMatcher(
                     None, event['name'].lower(), ex_name.lower()
                 ).ratio()
-                if similarity >= 0.8:
+                if similarity >= 0.5:
                     status = 'possible_duplicate'
                     print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
                           f"{event['name']} ~ {ex_name}")

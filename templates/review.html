@@ -682,7 +682,7 @@
                 const cardClasses = [
                     'event-card',
                     event.overall_confidence < 0.6 ? 'low-confidence' : '',
-                    (event.duplicates.exact.length > 0 || event.duplicates.similar.length > 0) ? 'has-duplicates' : '',
+                    event.status === 'possible_duplicate' ? 'has-duplicates' : '',
                     event.status === 'approved' ? 'approved' : ''
                 ].filter(Boolean).join(' ');
                 
@@ -701,14 +701,9 @@
                                     ${event.date_changed ? `<span class="badge-date-changed">📅 Date Changed</span>` : ''}                            </div>
                         </div>
                         
-                        ${event.duplicates.exact.length > 0 && event.status !== 'approved' ? `
+                        ${event.status === 'possible_duplicate' ? `
                         <div class="duplicate-warning">
-                            <div class="duplicate-warning-title">⚠️ Potential Duplicate Detected</div>
-                            ${event.duplicates.exact.map(dup => `
-                                <div class="duplicate-item">
-                                    Similar to: ${dup.name} (${Math.round(dup.similarity * 100)}% match)
-                                </div>
-                            `).join('')}
+                            <div class="duplicate-warning-title">⚠️ Possible Duplicate</div>
                         </div>
                         ` : ''}
                         
@@ -820,7 +815,7 @@
             const lowConfidence = events.filter(e => e.overall_confidence < 0.6).length;
             document.getElementById('stat-low-confidence').textContent = lowConfidence;
             
-            const duplicates = events.filter(e => e.duplicates.exact.length > 0 || e.duplicates.similar.length > 0).length;
+            const duplicates = events.filter(e => e.status === 'possible_duplicate').length;
             document.getElementById('stat-duplicates').textContent = duplicates;
         }
         

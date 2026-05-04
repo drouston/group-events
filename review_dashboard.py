@@ -128,50 +128,6 @@ def load_pending_events():
     conn.close()
     return events
 
-# Check for duplicates
-def find_duplicates(event_name, event_date, event_venue, event_id=None):
-    conn = get_db_connection()
-    c = conn.cursor()
-    
-    # Check exact match
-    if DATABASE_URL:
-        c.execute('''SELECT id, name, date, venue FROM events 
-                     WHERE status NOT IN ('rejected', 'canceled')
-                     AND date = %s AND venue = %s
-                     AND id != %s''', (event_date, event_venue, event_id or 0))
-    else:
-        c.execute('''SELECT id, name, date, venue FROM events 
-                     WHERE status NOT IN ('rejected', 'canceled')
-                     AND date = ? AND venue = ?
-                     AND id != ?''', (event_date, event_venue, event_id or 0))
-    
-    exact_matches = []
-    similar_matches = []
-    
-    for row in c.fetchall():
-        existing_name = row[1]
-        similarity = SequenceMatcher(None, event_name.lower(), existing_name.lower()).ratio()
-        
-        if similarity > 0.9:
-            exact_matches.append({
-                'id': row[0],
-                'name': existing_name,
-                'similarity': similarity
-            })
-        elif similarity > 0.7:
-            similar_matches.append({
-                'id': row[0],
-                'name': existing_name,
-                'similarity': similarity
-            })
-    
-    conn.close()
-    
-    return {
-        'exact': exact_matches,
-        'similar': similar_matches
-    }
-
 # Calculate overall confidence score
 def calculate_confidence(event):
     if not event.get('confidence'):
@@ -341,14 +297,7 @@ def delete_published():
 def index():
     events = load_pending_events()
     
-    # Add duplicate detection and confidence to each event
     for event in events:
-        event['duplicates'] = find_duplicates(
-            event['name'], 
-            event['date'], 
-            event['venue'],
-            event['id']
-        )
         event['overall_confidence'] = calculate_confidence(event)
     
     # Sort by confidence (lowest first = needs most review)
@@ -698,13 +647,10 @@ def filter_events():
         # Calculate overall confidence
         event['overall_confidence'] = calculate_confidence(event)
         
-        # Check for duplicates
-        event['duplicates'] = find_duplicates(event['name'], event['date'], event['venue'], event['id'])
-        
         events.append(event)
-    
+
     conn.close()
-    
+
     # Apply confidence filter (can't do in SQL easily)
     if filters.get('confidence_level'):
         if filters['confidence_level'] == 'low':
@@ -713,10 +659,10 @@ def filter_events():
             events = [e for e in events if 0.6 <= e['overall_confidence'] < 0.8]
         elif filters['confidence_level'] == 'high':
             events = [e for e in events if e['overall_confidence'] >= 0.8]
-    
+
     # Apply duplicates filter
     if filters.get('has_duplicates'):
-        events = [e for e in events if e['duplicates']['exact'] or e['duplicates']['similar']]
+        events = [e for e in events if e['status'] == 'possible_duplicate']
     
     return jsonify({'events': events, 'count': len(events)})
 
