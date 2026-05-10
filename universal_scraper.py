@@ -2,6 +2,7 @@ import os
 import json
 import time
 import sqlite3
+import requests
 from datetime import datetime, timedelta
 
 from selenium import webdriver
@@ -111,14 +112,11 @@ VENUES = {
         "wait_time": 5
     },
     "continental_club": {
-        "name": "Continental Club Houston",
-        "url": "https://events.timely.fun/uggqcowo/tile?categories=677491865&nofilters=1",
-        "city": "Houston",
-        "state": "TX",
-        "wait_time": 10,
-        "scroll_count": 1,
-        "venue_instruction": "This page covers two venues. Use venue 'Continental Club Houston' for most events. Use venue 'Big Top Charlies Shoeshine Lounge' for events described as being at 'The Big Top' in the title or description."
-    },
+    "name": "Continental Club Houston",
+    "city": "Houston",
+    "state": "TX",
+    "timely_calendar_id": "54706359"
+},
     "woodland_pavilion": {
         "name": "Cynthia Woods Mitchell Pavilion",
         "url": "https://www.woodlandscenter.org/events",
@@ -170,6 +168,40 @@ VENUES = {
         "wait_time": 5,
         "scroll_count": 2
     },
+    "axelrad": {
+        "name": "Axelrad Beer Garden",
+        "url": "https://www.axelradhouston.com/music",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+        "venue_instruction": "Extract all upcoming concerts from the 'Upcoming Events' section. Each event follows this exact pattern: first a date like '5.9.26', then a time like '8pm doors' or '6pm doors 7pm music', then the artist name, then the stage/location. Use the doors time as doors_time in HH:MM 24hr format. If a music start time is also listed, use that as start_time. The location is 'The Attic' or 'Main Stage'."    },
+    "warehouse_live": {
+        "name": "Warehouse Live Midtown",
+        "url": "https://warehouselivemidtown.com/calendar/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+        "seetickets": True
+    },
+    "toyota_center": {
+        "name": "Toyota Center",
+        "url": "https://www.toyotacenter.com/events",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+        "load_more_id": "loadMoreEvents"
+    },
+    "nrg_park": {
+        "name": "NRG Park",
+        "url": "https://www.nrgpark.com/events-tickets/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3
+    }
 }
 
 def get_content_hash(content):
@@ -240,7 +272,7 @@ def check_canceled_events(venue_key, scraped_events):
     conn.close()
     print(f"  {canceled_count} events flagged as canceled for {venue_name}")
 
-def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
+def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None):
     """Scrape a page using Selenium"""
     print(f"Fetching {url}...")
     
@@ -262,6 +294,20 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
             time.sleep(2)
             print(f"  Scroll {i+1}/{scroll_count}")
         
+        if load_more_id :
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            while True:
+                try:
+                    btn = WebDriverWait(driver, 3).until(
+                        EC.element_to_be_clickable((By.ID, load_more_id))
+                    )
+                    driver.execute_script("arguments[0].click();", btn)
+                    time.sleep(2)
+                except:
+                    break
+
         html = driver.page_source
         
         if debug:
@@ -282,6 +328,351 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1):
         
     finally:
         driver.quit()
+
+def scrape_timely_api(venue_config, mode='daily'):
+    """Fetch events from Timely API for venues using Timely calendar"""
+    import time as time_module
+    
+    calendar_id = venue_config['timely_calendar_id']
+    city = venue_config.get('city', '')
+    state = venue_config.get('state', '')
+    
+    start_date_utc = int(time_module.time())
+    events = []
+    page = 1
+    
+    while True:
+        url = (f"https://events.timely.fun/api/calendars/{calendar_id}/events"
+               f"?timezone=America/Chicago&view=posterboard"
+               f"&start_date_utc={start_date_utc}&per_page=100&page={page}")
+        
+        try:
+            print(f"  Fetching: {url}")
+            response = requests.get(url, timeout=10, headers={
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'https://events.timely.fun/uggqcowo/posterboard',
+                'X-Api-Key': 'c6e5e0363b5925b28552de8805464c66f25ba0ce'
+            })
+            data = response.json()
+            items = data.get('data', {}).get('items', [])
+            
+            for item in items:
+                venue_name = item.get('taxonomies', {}).get('taxonomy_venue', [{}])[0].get('title', venue_config['name'])
+                start_dt = item.get('start_datetime', '')
+
+                title_lower = item.get('title', '').lower()
+                is_private = any(phrase in title_lower for phrase in ['private party', 'closed for private', 'private event'])
+
+                if is_private:
+                    event_type = 'private_event'
+                elif any(phrase in title_lower for phrase in ['comedy', 'stand-up', 'standup']):
+                    event_type = 'comedy'
+                elif any(phrase in title_lower for phrase in ['open mic', 'open-mic']):
+                    event_type = 'open_mic'
+                elif any(phrase in title_lower for phrase in ['happy hour', 'happyhour']):
+                    event_type = 'happy_hour'
+                elif any(phrase in title_lower for phrase in ['storytime', 'storytelling', 'gust', 'trivia', 'bingo', 'karaoke']):
+                    event_type = 'other'
+                else:
+                    event_type = 'music'
+
+                visible = event_type in ('music', 'comedy')
+
+                event = {
+                    'name': item.get('title', ''),
+                    'date': start_dt[:10] if start_dt else None,
+                    'start_time': start_dt[11:16] if start_dt else None,
+                    'doors_time': None,
+                    'venue': venue_name,
+                    'location': None,
+                    'city': city,
+                    'state': state,
+                    'price': item.get('cost_display'),
+                    'ticket_url': item.get('cost_external_url'),
+                    'event_url': item.get('url'),
+                    'description': item.get('description_short', ''),
+                    'genre': None,
+                    'event_type': event_type,
+                    'visible': visible,
+                    'sold_out': False,
+                    'date_changed': False,
+                    'openers': None,
+                    'confidence': {}
+                }
+                
+                events.append(event)
+            
+            if not data.get('data', {}).get('has_next'):
+                break
+            page += 1
+            
+        except Exception as e:
+            print(f"  ✗ Timely API error (page {page}): {e}")
+            break
+    
+    print(f"  ✓ Fetched {len(events)} events from Timely API")
+    return events
+
+def parse_seetickets_html(html, venue_config):
+    """Parse SeeTickets calendar widget HTML"""
+    from bs4 import BeautifulSoup
+    import re
+    from datetime import datetime
+    
+    soup = BeautifulSoup(html, 'html.parser')
+    city = venue_config.get('city', '')
+    state = venue_config.get('state', '')
+    venue_name = venue_config['name']
+    today = datetime.now()
+    events = []
+    seen = set()  # deduplicate since HTML has repeated elements
+    
+    containers = soup.find_all('div', class_='seetickets-calendar-event-container')
+    
+    with open('/tmp/warehouse.html', 'w') as f:
+        f.write(html)
+    print(f"  Debug: {len(containers)} containers found in {len(html)} chars of HTML")
+
+    for container in containers:
+        # Get ticket URL and date from aria-label
+        buy_btn = container.find('a', class_='button-gettickets')
+        if not buy_btn:
+            continue
+        ticket_url = buy_btn.get('href')
+        aria_label = buy_btn.get('aria-label', '')
+
+        sold_out = 'button-soldout' in buy_btn.get('class', [])
+        
+        # Extract date from "Buy Tickets for X on Month Day"
+        date_match = re.search(r'on (\w+ \d+)$', aria_label)
+        if not date_match:
+            continue
+        date_str = date_match.group(1)  # e.g. "May 31" or "Jun 04"
+
+        for year in [today.year, today.year + 1]:
+            try:
+                event_date = datetime.strptime(f"{date_str} {year}", "%b %d %Y")
+                if event_date.date() >= today.date():
+                    break
+            except ValueError:
+                try:
+                    event_date = datetime.strptime(f"{date_str} {year}", "%B %d %Y")
+                    if event_date.date() >= today.date():
+                        break
+                except ValueError:
+                    continue
+        
+        # Deduplicate by ticket URL
+        if ticket_url in seen:
+            continue
+        seen.add(ticket_url)
+        
+        # Name
+        title_el = container.find('p', class_='bold')
+        name = title_el.get_text(strip=True) if title_el else None
+        if not name:
+            continue
+        
+        # Openers
+        openers_el = container.find('p', class_='supporting-talent')
+        openers = openers_el.get_text(strip=True).lstrip('with ') if openers_el else None
+        
+        # Times
+        times_div = container.find('div', class_='seetickets-calendar-event-date')
+        start_time = None
+        doors_time = None
+        if times_div:
+            time_els = times_div.find_all('p')
+            for p in time_els:
+                text = p.get_text(strip=True)
+                if 'Show:' in text:
+                    t = text.replace('Show:', '').strip()
+                    try:
+                        start_time = datetime.strptime(t, '%I:%M%p').strftime('%H:%M')
+                    except:
+                        pass
+                elif 'Doors:' in text:
+                    t = text.replace('Doors:', '').strip()
+                    try:
+                        doors_time = datetime.strptime(t, '%I:%M%p').strftime('%H:%M')
+                    except:
+                        pass
+        
+        events.append({
+            'name': name,
+            'date': event_date.strftime('%Y-%m-%d'),
+            'start_time': start_time,
+            'doors_time': doors_time,
+            'venue': venue_name,
+            'location': None,
+            'city': city,
+            'state': state,
+            'price': None,
+            'ticket_url': ticket_url,
+            'event_url': None,
+            'description': None,
+            'genre': None,
+            'event_type': 'music',
+            'visible': True,
+            'sold_out': sold_out,
+            'date_changed': False,
+            'openers': openers,
+            'confidence': {}
+        })
+    
+    print(f"  ✓ Parsed {len(events)} events from SeeTickets HTML")
+    return events
+
+def ajax_scrape(venue_config, mode='daily'):
+    """Scrape venues that use AJAX pagination returning HTML fragments"""
+    import requests
+    
+    ajax_url = venue_config['ajax_url']
+    params = venue_config.get('ajax_params', {})
+    increment = venue_config.get('ajax_increment', 12)
+    offset = 0
+    all_html = ""
+    headers={
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'text/html, */*; q=0.01',
+        'Referer': 'https://www.toyotacenter.com/events',
+    }
+    
+    try:
+        while True:
+            url = ajax_url.format(offset=offset)
+            r = requests.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=15
+            )
+            print(f"  Debug: offset={offset}, response length={len(r.text)}, status={r.status_code}")
+            if not r.text.strip():
+                break
+            all_html += r.text
+            offset += increment
+    except Exception as e:
+        print(f"  ✗ AJAX fetch error: {e}")
+        return []
+    
+    print(f"  ✓ Fetched {offset} events worth of HTML via AJAX")
+    return extract_events_with_llm_raw(
+        all_html,
+        venue_config['name'],
+        venue_config['city'],
+        venue_config['state'],
+        is_html=True,
+        venue_instruction=venue_config.get('venue_instruction')
+    )
+
+def scrape_google_ics(venue_config, mode='daily'):
+    """Fetch events from a public Google Calendar ICS feed"""
+    from icalendar import Calendar
+    import recurring_ical_events
+    from datetime import datetime, date
+    import pytz
+
+    ical_url = venue_config['ical_url']
+    city = venue_config.get('city', '')
+    state = venue_config.get('state', '')
+    venue_name = venue_config['name']
+    tz = pytz.timezone('America/Chicago')
+    today = datetime.now(tz).date()
+    end_date = today + timedelta(days=30)
+
+    try:
+        response = requests.get(ical_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        cal = Calendar.from_ical(response.content)
+        all_events = recurring_ical_events.of(cal).between(today, end_date)
+    except Exception as e:
+        print(f"  ✗ ICS fetch error: {e}")
+        return []
+
+    events = []
+
+    for component in all_events:
+        summary = str(component.get('SUMMARY', ''))
+        summary_lower = summary.lower()
+
+        # Skip unwanted events
+        if any(phrase in summary_lower for phrase in [
+            'food truck', 'food:'
+        ]):
+            continue
+
+        # Get start datetime
+        dtstart = component.get('DTSTART').dt
+
+        if isinstance(dtstart, date) and not isinstance(dtstart, datetime):
+            event_date = dtstart
+            start_time = None
+        else:
+            if dtstart.tzinfo is None:
+                dtstart = pytz.utc.localize(dtstart)
+            dtstart = dtstart.astimezone(tz)
+            event_date = dtstart.date()
+            start_time = dtstart.strftime('%H:%M')
+
+        if start_time is None:
+            continue
+
+        # Determine event type
+        title_lower = summary_lower
+        is_private = any(p in title_lower for p in ['private party', 'closed for private', 'private event'])
+        if is_private:
+            event_type = 'private_event'
+        elif any(p in title_lower for p in ['comedy', 'stand-up', 'standup', 'punchline']):
+            event_type = 'comedy'
+        elif any(p in title_lower for p in ['open mic', 'open-mic']):
+            event_type = 'open_mic'
+        elif any(p in title_lower for p in ['happy hour', 'happyhour']):
+            event_type = 'happy_hour'
+        elif any(p in title_lower for p in ['movie', 'film', 'cinema']):
+            event_type = 'other'
+        elif any(p in title_lower for p in ['storytime', 'storytelling', 'trivia', 'bingo', 'karaoke']):
+            event_type = 'other'
+        else:
+            event_type = 'music'
+
+        visible = event_type in ('music', 'comedy')
+
+        # Clean up summary prefix
+        name = summary
+        for prefix in ['MUSIC: ', 'Music: ', 'MUSIC:', 'Music:']:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+
+        description = str(component.get('DESCRIPTION', '')) or None
+
+        event = {
+            'name': name.strip(),
+            'date': event_date.strftime('%Y-%m-%d'),
+            'start_time': start_time,
+            'doors_time': None,
+            'venue': venue_name,
+            'location': None,
+            'city': city,
+            'state': state,
+            'price': None,
+            'ticket_url': None,
+            'event_url': None,
+            'description': description,
+            'genre': None,
+            'event_type': event_type,
+            'visible': visible,
+            'sold_out': False,
+            'date_changed': False,
+            'openers': None,
+            'confidence': {}
+        }
+        events.append(event)
+
+    print(f"  ✓ Fetched {len(events)} events from Google Calendar ICS")
+    return events
 
 def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
     """Route LLM request to the appropriate provider"""
@@ -577,7 +968,7 @@ def pre_filter_dates(venue_name, page_text):
     if new_dates:
         print(f"  ℹ {len(new_dates)} potentially new date(s) detected")
 
-def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
+def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
 
@@ -585,7 +976,25 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
     print(f"Scraping: {venue['name']} [{mode} mode]")
     print(f"{'='*60}")
 
-    debug = venue_key in ['white_oak', 'continental_club']
+    # Timely API venues — bypass Selenium + LLM entirely
+    if venue.get('timely_calendar_id'):
+        return scrape_timely_api(venue, mode)
+    
+    # SeeTickets venues — scrape with Selenium but parse with custom HTML parser, no LLM
+    if venue.get('seetickets'):
+        _, html = scrape_page(venue['url'], wait_time=venue.get('wait_time', 3),
+                            scroll_count=venue.get('scroll_count', 1),load_more_id=venue.get('load_more_id'))
+        return parse_seetickets_html(html, venue)
+    
+    # AJAX venues — fetch all paginated HTML fragments and parse with LLM in one go
+    if venue.get('ajax_url'):
+        return ajax_scrape(venue, mode)
+
+    # Google Calendar ICS feed — bypass Selenium + LLM entirely
+    if venue.get('ical_url'):
+        return scrape_google_ics(venue, mode)
+
+    debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
 
     # Handle paginated venues
@@ -601,7 +1010,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
                 current_url,
                 wait_time=venue.get('wait_time', 3),
                 debug=debug,
-                scroll_count=scroll_count
+                scroll_count=scroll_count,
+                load_more_id=venue.get('load_more_id')
             )
             combined_text += '\n' + page_text
 
@@ -629,7 +1039,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
             venue['url'],
             wait_time=venue.get('wait_time', 3),
             debug=debug,
-            scroll_count=scroll_count
+            scroll_count=scroll_count,
+            load_more_id=venue.get('load_more_id')
         )
 
     # Hash check — skip LLM if content unchanged (not for onboard mode)
@@ -644,6 +1055,12 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
 
     # Log new dates detected (informational)
     pre_filter_dates(venue['name'], page_text)
+
+    #Print html preview in dry run mode for debugging
+    if dry_run:
+        print(f"\n--- PAGE TEXT PREVIEW ---")
+        print(page_text[:15000])
+        print(f"--- END PREVIEW ---\n")
 
     # Use custom parser for White Oak
     if venue_key == 'white_oak':
@@ -669,7 +1086,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini'):
         check_canceled_events(venue_key, events)
 
     # Update stored hash
-    update_stored_hash(venue_key, content_hash)
+    if not args.dry_run:
+        update_stored_hash(venue_key, content_hash)
 
     return events
 
@@ -691,13 +1109,12 @@ def save_to_database(events, mode='daily', auto_approve=False):
     from difflib import SequenceMatcher
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # Onboard mode: filter out past events
-    if mode == 'onboard':
-        before = len(events)
-        events = [e for e in events if e.get('date', '') >= today]
-        filtered = before - len(events)
-        if filtered:
-            print(f"  ↷ Filtered {filtered} past events")
+    #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
+    before = len(events)
+    events = [e for e in events if e.get('date', '') >= today]
+    filtered = before - len(events)
+    if filtered:
+        print(f"  ↷ Filtered {filtered} past events")
 
     if not DATABASE_URL:
         print("No DATABASE_URL found - saving to JSON instead")
@@ -861,19 +1278,19 @@ if __name__ == "__main__":
             print(f"✗ Unknown venue key: {args.venue}")
             print(f"  Available: {', '.join(VENUES.keys())}")
         else:
-            events = scrape_venue(args.venue, mode=args.mode)
+            events = scrape_venue(args.venue, mode=args.mode, llm=args.llm, dry_run=args.dry_run)
             if args.dry_run:
                 print(f"\n{'='*60}")
                 print(f"DRY RUN — {len(events)} events extracted, not saved")
                 for e in events:
-                    print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                    print(f"  {e.get('date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
                 print(f"{'='*60}")
             else:
                 if args.dry_run:
                     print(f"\n{'='*60}")
                     print(f"DRY RUN — {len(events)} events extracted, not saved")
                     for e in events:
-                        print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                        print(f"  {e.get('date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
                     print(f"{'='*60}")
                 else:
                     save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)

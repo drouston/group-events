@@ -9,3 +9,6 @@ ticketmaster_events.json
 .DS_Store
 gpt_events.json
 seed_test_data.py
+timely_test.ics
+timely_test.xml
+test_llm.py
