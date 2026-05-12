@@ -55,6 +55,7 @@ def init_db():
                       total_scraped INTEGER,
                       total_approved INTEGER,
                       total_rejected INTEGER)''')
+        c.execute('''ALTER TABLE events ADD COLUMN IF NOT EXISTS duplicate_of_id INTEGER''')
     else:
         # SQLite syntax
         c.execute('''CREATE TABLE IF NOT EXISTS events
@@ -83,7 +84,11 @@ def init_db():
                       total_scraped INTEGER,
                       total_approved INTEGER,
                       total_rejected INTEGER)''')
-    
+        try:
+            c.execute('''ALTER TABLE events ADD COLUMN duplicate_of_id INTEGER''')
+        except Exception:
+            pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -541,7 +546,7 @@ def filter_events():
     # Base query
     query = '''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
                price, ticket_url, description, genre, confidence, notes, status, created_at,
-               event_type, visible, sold_out, date_changed, openers, event_url
+               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id
                FROM events WHERE 1=1'''
     params = []
     
@@ -641,13 +646,24 @@ def filter_events():
             'sold_out': row[19] if row[19] is not None else False,
             'date_changed': row[20] if row[20] is not None else False,
             'openers': row[21],
-            'event_url': row[22]
+            'event_url': row[22],
+            'duplicate_of_id': row[23]
         }
-        
+
         # Calculate overall confidence
         event['overall_confidence'] = calculate_confidence(event)
-        
+
         events.append(event)
+
+    # Batch-fetch original event info for possible duplicates
+    orig_ids = [e['duplicate_of_id'] for e in events if e.get('duplicate_of_id')]
+    if orig_ids:
+        ph_list = ','.join([ph] * len(orig_ids))
+        c.execute(f'SELECT id, name, date, venue FROM events WHERE id IN ({ph_list})', orig_ids)
+        orig_map = {row[0]: {'name': row[1], 'date': row[2], 'venue': row[3]} for row in c.fetchall()}
+        for event in events:
+            if event.get('duplicate_of_id') and event['duplicate_of_id'] in orig_map:
+                event['duplicate_of'] = orig_map[event['duplicate_of_id']]
 
     conn.close()
 

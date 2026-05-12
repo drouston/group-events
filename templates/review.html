@@ -254,6 +254,11 @@
             color: #c62828;
             margin-bottom: 5px;
         }
+
+        .duplicate-warning-original {
+            font-size: 0.85em;
+            color: #b71c1c;
+        }
         
         .duplicate-item {
             font-size: 14px;
@@ -704,6 +709,13 @@
                         ${event.status === 'possible_duplicate' ? `
                         <div class="duplicate-warning">
                             <div class="duplicate-warning-title">⚠️ Possible Duplicate</div>
+                            ${event.duplicate_of ? `
+                            <div class="duplicate-warning-original">
+                                Original: <strong>${event.duplicate_of.name}</strong>
+                                &mdash; ${event.duplicate_of.date}
+                                &mdash; ${event.duplicate_of.venue}
+                                (ID #${event.duplicate_of_id})
+                            </div>` : ''}
                         </div>
                         ` : ''}
                         

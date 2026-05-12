@@ -802,7 +802,7 @@ Fields to extract:
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
-- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
+- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', 'sports', or 'other'. Use 'music' as default if unclear.
 - sold_out: true if event is sold out, false otherwise
 - date_changed: true if event has been rescheduled or date changed, false otherwise
 - openers: Comma-separated list of opening acts if mentioned, otherwise null
@@ -1153,6 +1153,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
             existing = c.fetchall()
 
             status = 'approved' if auto_approve else 'pending'
+            duplicate_of_id = None
             event_type = event.get('event_type', 'music')
             visible = event_type in ('music', 'comedy')
             # Auto-assign genre from event_type if not set
@@ -1164,18 +1165,17 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 ).ratio()
                 if similarity >= 0.5:
                     status = 'possible_duplicate'
+                    duplicate_of_id = ex_id
                     print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
                           f"{event['name']} ~ {ex_name}")
                     flagged += 1
                     break
-
-            # Insert event
             # Insert event
             c.execute(f'''INSERT INTO events
                         (name, date, doors_time, start_time, venue, location, city, state,
                         price, ticket_url, event_url, description, genre, confidence, status, created_at,
-                        event_type, visible, sold_out, date_changed, openers)
-                        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                        event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
+                        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                     (event['name'], event['date'], event.get('doors_time'),
                     event.get('start_time'), event['venue'], event.get('location'),
                     event.get('city', ''), event.get('state', ''),
@@ -1187,7 +1187,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     event_type, visible,
                     event.get('sold_out', False),
                     event.get('date_changed', False),
-                    event.get('openers')))
+                    event.get('openers'), duplicate_of_id))
             inserted += 1
 
         except Exception as e:
@@ -1200,6 +1200,52 @@ def save_to_database(events, mode='daily', auto_approve=False):
     print(f"✓ Inserted {inserted} new events")
     print(f"⚠ Flagged {flagged} possible duplicates")
     print(f"⊘ Skipped {skipped} exact duplicates")
+    print(f"{'='*60}")
+
+def detect_existing_duplicates(dry_run=False):
+    """Scan the events table for possible duplicates and update their status"""
+    from difflib import SequenceMatcher
+    from collections import defaultdict
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+
+    # Only scan active events — skip already-flagged, rejected, canceled
+    c.execute('''SELECT id, name, date, venue FROM events
+                 WHERE status IN ('pending', 'approved')
+                 ORDER BY id ASC''')
+    rows = c.fetchall()
+
+    groups = defaultdict(list)
+    for event_id, name, date, venue in rows:
+        groups[(venue, date)].append((event_id, name))
+
+    flagged = 0
+    for (venue, date), group in groups.items():
+        if len(group) < 2:
+            continue
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                id_a, name_a = group[i]
+                id_b, name_b = group[j]
+                similarity = SequenceMatcher(None, name_a.lower(), name_b.lower()).ratio()
+                if similarity >= 0.5:
+                    # Keep the older event (lower id); flag the newer one
+                    orig_id, orig_name = (id_a, name_a) if id_a < id_b else (id_b, name_b)
+                    dup_id, dup_name = (id_b, name_b) if id_a < id_b else (id_a, name_a)
+                    print(f"  ⚠ ({int(similarity*100)}%) #{dup_id} '{dup_name}' ~ #{orig_id} '{orig_name}' [{venue} {date}]")
+                    if not dry_run:
+                        c.execute(f'''UPDATE events SET status = 'possible_duplicate', duplicate_of_id = {ph}
+                                      WHERE id = {ph}''', (orig_id, dup_id))
+                    flagged += 1
+
+    if not dry_run:
+        conn.commit()
+    conn.close()
+
+    print(f"\n{'='*60}")
+    print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} possible duplicates")
     print(f"{'='*60}")
 
 def archive_past_events(buffer_days=1):
@@ -1263,11 +1309,18 @@ if __name__ == "__main__":
                         help='LLM provider to use for extraction')
     parser.add_argument('--dry-run', action='store_true',
                         help='Extract and print events without writing to DB')
+    parser.add_argument('--detect-duplicates', action='store_true',
+                        help='Scan existing events table for duplicates and flag them')
     args = parser.parse_args()
 
-    print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
-
     init_db()
+
+    if args.detect_duplicates:
+        print(f"=== Duplicate Detection {'[DRY RUN] ' if args.dry_run else ''}===\n")
+        detect_existing_duplicates(dry_run=args.dry_run)
+        exit(0)
+
+    print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
 
     # Archive past events on weekly run
     if args.mode == 'weekly':
