@@ -748,7 +748,7 @@ def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'
 Extract ALL events from the provided text into a JSON array. For each event:
 - name: Full event name/title
 - start_date: YYYY-MM-DD format (use 2026 for dates without year)
-- end_date: YYYY-MM-DD format (use 2026 for dates without year)
+- end_date: YYYY-MM-DD format (use 2026 for dates without year, for date ranges or multiple dates for a single event, else null)
 - doors_time: HH:MM format (24-hour) or null (look for times like "6:30pm", "7:00pm", "Doors: 7pm", etc.)
 - start_time: HH:MM format (24-hour) (24-hour, Central Time - DO NOT CONVERT TIMEZONES) or null 
   IMPORTANT: If you see "8:00 PM" or "8pm", output "20:00" NOT "02:00"
