@@ -250,10 +250,10 @@
         function groupEventsByDate(events) {
             const grouped = {};
             events.forEach(event => {
-                if (!grouped[event.date]) {
-                    grouped[event.date] = [];
+                if (!grouped[event.start_date]) {
+                    grouped[event.start_date] = [];
                 }
-                grouped[event.date].push(event);
+                grouped[event.start_date].push(event);
             });
             return grouped;
         }
@@ -364,8 +364,8 @@
             const todayStr = now.toISOString().split('T')[0];
 
             return events.filter(event => {
-                if (event.date > todayStr) return true;
-                if (event.date < todayStr) return false;
+                if (event.start_date > todayStr) return true;
+                if (event.start_date < todayStr) return false;
 
                 // Today: keep until midnight regardless of start time
                 return true;

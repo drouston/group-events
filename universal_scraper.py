@@ -158,7 +158,7 @@ VENUES = {
         "paginated": True,
         "next_page_selector": "#moreshowsbtn",
         "page_param": "start",
-        "venue_instruction": "This page covers multiple Texas Improv locations. Only extract events for 'Houston Improv' — ignore Addison Improv, Arlington Improv, LOL San Antonio and any other locations. Set venue to 'Improv Houston' and city to 'Houston' for all extracted events. CRITICAL: When an event spans multiple nights (e.g. 'Apr 17-18 Fri-Sat' or 'Apr 24-26 Fri-Sun'), you MUST create a SEPARATE event entry for EACH individual night. For example 'Apr 17-18' = two events: one on 2026-04-17 AND one on 2026-04-18.",
+        "venue_instruction": "This page covers multiple Texas Improv locations. Only extract events for 'Houston Improv' — ignore Addison Improv, Arlington Improv, LOL San Antonio and any other locations. Set venue to 'Improv Houston' and city to 'Houston' for all extracted events.",
     },
     "riot_comedy": {
         "name": "The Riot Comedy Club",
@@ -246,20 +246,15 @@ def check_canceled_events(venue_key, scraped_events):
     ph = '%s' if DATABASE_URL else '?'
     venue_name = VENUES[venue_key]['name']
     today = datetime.now().strftime('%Y-%m-%d')
-
-    # Get all future approved/pending events for this venue
-    c.execute(f'''SELECT id, name, date FROM events
-                 WHERE venue = {ph} AND date >= {ph}
+    c.execute(f'''SELECT id, name, start_date FROM events
+                 WHERE venue = {ph} AND start_date >= {ph}
                  AND status IN ('approved', 'pending')''',
               (venue_name, today))
     db_events = c.fetchall()
-
-    # Build set of scraped event identifiers
     scraped_set = set(
-        (e['name'].strip().lower(), e['date'])
+        (e['name'].strip().lower(), e.get('start_date'))
         for e in scraped_events
     )
-
     canceled_count = 0
     for db_id, db_name, db_date in db_events:
         if (db_name.strip().lower(), db_date) not in scraped_set:
@@ -267,7 +262,6 @@ def check_canceled_events(venue_key, scraped_events):
                          WHERE id = {ph}''', (db_id,))
             canceled_count += 1
             print(f"  ⚠ Flagged as canceled: {db_name} on {db_date}")
-
     conn.commit()
     conn.close()
     print(f"  {canceled_count} events flagged as canceled for {venue_name}")
@@ -381,8 +375,11 @@ def scrape_timely_api(venue_config, mode='daily'):
 
                 event = {
                     'name': item.get('title', ''),
-                    'date': start_dt[:10] if start_dt else None,
+                    'start_date': start_dt[:10] if start_dt else None,
+                    'end_date': None,
+                    'multi_day': False,
                     'start_time': start_dt[11:16] if start_dt else None,
+                    'end_time': None,
                     'doors_time': None,
                     'venue': venue_name,
                     'location': None,
@@ -501,8 +498,11 @@ def parse_seetickets_html(html, venue_config):
         
         events.append({
             'name': name,
-            'date': event_date.strftime('%Y-%m-%d'),
+            'start_date': event_date.strftime('%Y-%m-%d'),
+            'end_date': None,
+            'multi_day': False,
             'start_time': start_time,
+            'end_time': None,
             'doors_time': doors_time,
             'venue': venue_name,
             'location': None,
@@ -650,8 +650,11 @@ def scrape_google_ics(venue_config, mode='daily'):
 
         event = {
             'name': name.strip(),
-            'date': event_date.strftime('%Y-%m-%d'),
+            'start_date': event_date.strftime('%Y-%m-%d'),
+            'end_date': None,
+            'multi_day': False,
             'start_time': start_time,
+            'end_time': None,
             'doors_time': None,
             'venue': venue_name,
             'location': None,
@@ -744,12 +747,15 @@ def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'
     system_prompt = f"""You are an expert at extracting structured event data from venue websites.
 Extract ALL events from the provided text into a JSON array. For each event:
 - name: Full event name/title
-- date: YYYY-MM-DD format (use 2026 for dates without year)
+- start_date: YYYY-MM-DD format (use 2026 for dates without year)
+- end_date: YYYY-MM-DD format (use 2026 for dates without year)
 - doors_time: HH:MM format (24-hour) or null (look for times like "6:30pm", "7:00pm", "Doors: 7pm", etc.)
 - start_time: HH:MM format (24-hour) (24-hour, Central Time - DO NOT CONVERT TIMEZONES) or null 
   IMPORTANT: If you see "8:00 PM" or "8pm", output "20:00" NOT "02:00"
   If you see "7:30 PM", output "19:30" NOT "01:30"
   DO NOT apply any timezone conversion. Keep times exactly as shown on the website.
+  Multi-night events: If you see a date range instead of a single date (e.g. "Apr 17-18 Fri-Sat", "April 17 - 18" or "Apr 17/18") assume that each date in the range has a unique event with the same details posted for name, venue, time, etc.
+- date_count: Number of consecutive days this event runs. 1 for single-night events, 2 for two nights, etc. For example 'March 29-31' = 3, 'Jun4-6' = 2, 'May 15' = 1.
 - venue: "{venue_name}"
 - city: "{city}"
 - state: "{state}"
@@ -787,12 +793,13 @@ TITLE CLEANUP (apply before setting name):
 
 Fields to extract:
 - name: Clean event name/title (see TITLE CLEANUP above)
-- date: YYYY-MM-DD format (use 2026 for dates without year)
+- start_date: YYYY-MM-DD format, the first/only date of the event (use 2026 for dates without year)
+- end_date: YYYY-MM-DD format if the event spans multiple dates, otherwise null
+- multi_day: true if this is a single continuous multi-day event (expo, festival, conference, multi-day sports tournament). false for single-day events AND for multi-night comedy/concert runs where the same act performs on separate nights.
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
-  IMPORTANT: If you see "8:00 PM" or "8pm", output "20:00" NOT "02:00"
-  If you see "7:30 PM", output "19:30" NOT "01:30"
-  DO NOT apply any timezone conversion. Keep times exactly as shown on the website.
+- end_time: HH:MM format (24-hour) or null
+  DO NOT apply any timezone conversion. Keep times exactly as shown.
 - venue: "{venue_name}" (see venue note below if present)
 - city: "{city}"
 - state: "{state}"
@@ -898,9 +905,12 @@ def parse_white_oak_html(html):
             
             events.append({
                 'name': name,
-                'date': date,
-                'doors_time': None,
+                'start_date': date,
+                'end_date': None,
+                'multi_day': False,
                 'start_time': start_time,
+                'end_time': None,
+                'doors_time': None,
                 'venue': 'White Oak Music Hall',
                 'location': location,
                 'city': 'Houston',
@@ -911,7 +921,7 @@ def parse_white_oak_html(html):
                 'genre': None,
                 'confidence': {
                     'name': 1.0,
-                    'date': 1.0,
+                    'start_date': 1.0,
                     'time': 0.8 if start_time else 0.0,
                     'price': 0.0,
                     'genre': 0.0
@@ -931,7 +941,6 @@ def pre_filter_dates(venue_name, page_text):
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
     today = datetime.now().strftime('%Y-%m-%d')
-
     month_map = {
         'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04',
         'may': '05', 'jun': '06', 'jul': '07', 'aug': '08',
@@ -940,30 +949,26 @@ def pre_filter_dates(venue_name, page_text):
         'june': '06', 'july': '07', 'august': '08', 'september': '09',
         'october': '10', 'november': '11', 'december': '12'
     }
-
     found_dates = set()
     for match in re.finditer(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec\w*)\s+(\d{1,2})',
-                              page_text.lower()):
+                             page_text.lower()):
         month_str = match.group(1)[:3]
         day = match.group(2).zfill(2)
         month_num = month_map.get(month_str)
         if month_num:
-            date = f"2026-{month_num}-{day}"
-            if date < today:
-                date = f"2027-{month_num}-{day}"
-            found_dates.add(date)
-
+            event_date = f"2026-{month_num}-{day}"
+            if event_date < today:
+                event_date = f"2027-{month_num}-{day}"
+            found_dates.add(event_date)
     if not found_dates:
         conn.close()
         return
-
-    c.execute(f'''SELECT DISTINCT date FROM events
-                 WHERE venue = {ph} AND date >= {ph}
+    c.execute(f'''SELECT DISTINCT start_date FROM events
+                 WHERE venue = {ph} AND start_date >= {ph}
                  AND status NOT IN ('rejected', 'canceled')''',
               (venue_name, today))
     db_dates = set(row[0] for row in c.fetchall())
     conn.close()
-
     new_dates = found_dates - db_dates
     if new_dates:
         print(f"  ℹ {len(new_dates)} potentially new date(s) detected")
@@ -1111,7 +1116,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
     before = len(events)
-    events = [e for e in events if e.get('date', '') >= today]
+    events = [e for e in events if e.get('start_date', '') >= today]
     filtered = before - len(events)
     if filtered:
         print(f"  ↷ Filtered {filtered} past events")
@@ -1132,31 +1137,29 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     for event in events:
         try:
-            # Exact duplicate check: venue + name + date + start_time
+            # Exact duplicate check: venue + name + start_date + start_time
             c.execute(f'''SELECT id FROM events
-                        WHERE name = {ph} AND date = {ph}
-                        AND venue = {ph}
-                        AND (start_time = {ph} OR (start_time IS NULL AND {ph} IS NULL))
-                        LIMIT 1''',
-                    (event['name'], event['date'], event['venue'],
-                    event.get('start_time'), event.get('start_time')))
-
+                            WHERE name = {ph} AND start_date = {ph}
+                            AND venue = {ph}
+                            AND (start_time = {ph} OR (start_time IS NULL AND {ph} IS NULL))
+                            LIMIT 1''',
+                        (event['name'], event.get('start_date'), event['venue'],
+                        event.get('start_time'), event.get('start_time')))
             if c.fetchone():
                 skipped += 1
                 print(f"  ⊘ Exact duplicate skipped: {event['name']}")
                 continue
 
-            # Partial duplicate check: same venue + date, similar name (>80%)
+            # Partial duplicate check: same venue + start_date, similar name
             c.execute(f'''SELECT id, name FROM events
-                         WHERE venue = {ph} AND date = {ph}''',
-                      (event['venue'], event['date']))
+                            WHERE venue = {ph} AND start_date = {ph}
+                            AND status != 'rejected' ''',
+                        (event['venue'], event.get('start_date')))
             existing = c.fetchall()
-
             status = 'approved' if auto_approve else 'pending'
             duplicate_of_id = None
             event_type = event.get('event_type', 'music')
             visible = event_type in ('music', 'comedy')
-            # Auto-assign genre from event_type if not set
             if not event.get('genre') and event_type == 'comedy':
                 event['genre'] = 'Comedy'
             for ex_id, ex_name in existing:
@@ -1167,40 +1170,40 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     status = 'possible_duplicate'
                     duplicate_of_id = ex_id
                     print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
-                          f"{event['name']} ~ {ex_name}")
+                        f"{event['name']} ~ {ex_name}")
                     flagged += 1
                     break
+            if status == 'approved' and event.get('end_date') and event['end_date'] != event.get('start_date'):
+                status = 'pending'
+
             # Insert event
             c.execute(f'''INSERT INTO events
-                        (name, date, doors_time, start_time, venue, location, city, state,
-                        price, ticket_url, event_url, description, genre, confidence, status, created_at,
-                        event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
-                        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
-                    (event['name'], event['date'], event.get('doors_time'),
-                    event.get('start_time'), event['venue'], event.get('location'),
-                    event.get('city', ''), event.get('state', ''),
-                    event.get('price'), event.get('ticket_url'),
-                    event.get('event_url'),
-                    event.get('description'), event.get('genre'),
-                    json.dumps(event.get('confidence', {})),
-                    status, datetime.now().isoformat(),
-                    event_type, visible,
-                    event.get('sold_out', False),
-                    event.get('date_changed', False),
-                    event.get('openers'), duplicate_of_id))
+                            (name, start_date, end_date, doors_time, start_time, end_time,
+                            multi_day, venue, location, city, state,
+                            price, ticket_url, event_url, description, genre, confidence, status, created_at,
+                            event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
+                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                        (event['name'],
+                        event.get('start_date', event.get('start_date')),
+                        event.get('end_date'),
+                        event.get('doors_time'),
+                        event.get('start_time'),
+                        event.get('end_time'),
+                        event.get('multi_day', False),
+                        event['venue'], event.get('location'),
+                        event.get('city', ''), event.get('state', ''),
+                        event.get('price'), event.get('ticket_url'),
+                        event.get('event_url'),
+                        event.get('description'), event.get('genre'),
+                        json.dumps(event.get('confidence', {})),
+                        status, datetime.now().isoformat(),
+                        event_type, visible,
+                        event.get('sold_out', False),
+                        event.get('date_changed', False),
+                        event.get('openers'), duplicate_of_id))
             inserted += 1
-
         except Exception as e:
             print(f"Error inserting {event['name']}: {e}")
-
-    conn.commit()
-    conn.close()
-
-    print(f"\n{'='*60}")
-    print(f"✓ Inserted {inserted} new events")
-    print(f"⚠ Flagged {flagged} possible duplicates")
-    print(f"⊘ Skipped {skipped} exact duplicates")
-    print(f"{'='*60}")
 
 def detect_existing_duplicates(dry_run=False):
     """Scan the events table for possible duplicates and update their status"""
@@ -1253,44 +1256,39 @@ def archive_past_events(buffer_days=1):
     if not DATABASE_URL:
         print("No DATABASE_URL — skipping archive (local dev)")
         return
-
     conn = get_db_connection()
     c = conn.cursor()
-
     cutoff = (datetime.now() - timedelta(days=buffer_days)).strftime('%Y-%m-%d')
-
     print(f"\n{'='*60}")
     print(f"Archiving events before {cutoff}...")
-
-    c.execute('''SELECT id, name, date, doors_time, start_time, venue, location, city, state,
+    c.execute('''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
+                 multi_day, venue, location, city, state,
                  price, ticket_url, description, genre, confidence, notes, status,
                  created_at, approved_at, event_type, visible, sold_out, date_changed,
                  openers, event_url
                  FROM events
-                 WHERE status = 'approved' AND date < %s''', (cutoff,))
-
+                 WHERE status = 'approved' AND start_date < %s''', (cutoff,))
     rows = c.fetchall()
     archived_at = datetime.now().isoformat()
     archived = 0
-
     for row in rows:
         try:
             c.execute('''INSERT INTO past_events
-                         (name, date, doors_time, start_time, venue, location, city, state,
+                         (name, start_date, end_date, doors_time, start_time, end_time,
+                          multi_day, venue, location, city, state,
                           price, ticket_url, description, genre, confidence, notes, status,
                           created_at, approved_at, archived_at, event_type, visible, sold_out,
                           date_changed, openers, event_url)
-                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
-                      (row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8],
-                       row[9], row[10], row[11], row[12], row[13], row[14], row[15],
-                       row[16], row[17], archived_at, row[18], row[19], row[20],
-                       row[21], row[22], row[23]))
-
+                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                      (row[1], row[2], row[3], row[4], row[5], row[6], row[7],
+                       row[8], row[9], row[10], row[11], row[12],
+                       row[13], row[14], row[15], row[16], row[17], row[18], row[19],
+                       row[20], row[21], archived_at, row[22], row[23], row[24],
+                       row[25], row[26], row[27]))
             c.execute('DELETE FROM events WHERE id = %s', (row[0],))
             archived += 1
         except Exception as e:
             print(f"  ✗ Error archiving {row[1]}: {e}")
-
     conn.commit()
     conn.close()
     print(f"✓ Archived {archived} past events")
@@ -1336,14 +1334,14 @@ if __name__ == "__main__":
                 print(f"\n{'='*60}")
                 print(f"DRY RUN — {len(events)} events extracted, not saved")
                 for e in events:
-                    print(f"  {e.get('date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                    print(f"  {e.get('start_date')} | {e.get('end_date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
                 print(f"{'='*60}")
             else:
                 if args.dry_run:
                     print(f"\n{'='*60}")
                     print(f"DRY RUN — {len(events)} events extracted, not saved")
                     for e in events:
-                        print(f"  {e.get('date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                        print(f"  {e.get('start_date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
                     print(f"{'='*60}")
                 else:
                     save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
@@ -1353,7 +1351,7 @@ if __name__ == "__main__":
             print(f"\n{'='*60}")
             print(f"DRY RUN — {len(all_events)} events extracted, not saved")
             for e in all_events:
-                print(f"  {e.get('date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                print(f"  {e.get('start_date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
             print(f"{'='*60}")
         else:
             save_to_database(all_events, mode=args.mode, auto_approve=args.auto_approve)

@@ -502,6 +502,7 @@
                     <option value="">None</option>
                     <option value="duplicates">Has Duplicates</option>
                     <option value="missing">Missing Data</option>
+                    <option value="end_date">Has End Date</option>
                 </select>
             </div>
             
@@ -638,6 +639,7 @@
                 date_to: document.getElementById('filter-date-to').value,
                 has_duplicates: document.getElementById('filter-special').value === 'duplicates',
                 missing_data: document.getElementById('filter-special').value === 'missing',
+                has_end_date: document.getElementById('filter-special').value === 'end_date',
                 sort_by: document.getElementById('sort-by').value,
                 sort_order: document.getElementById('sort-order').value
             };
@@ -721,9 +723,17 @@
                         
                         <div class="event-details">
                             <div class="detail-item">
-                                <span class="detail-label">Date:</span>
-                                <span class="detail-value">${event.date}</span>
-                                <input type="date" class="edit-input" value="${event.date}" data-field="date">
+                                <span class="detail-label">${event.multi_day ? 'Start Date:' : event.end_date && event.end_date !== event.start_date ? 'Dates:' : 'Date:'}</span>
+                                <span class="detail-value">
+                                    ${event.start_date}
+                                    ${event.end_date && event.end_date !== event.start_date ? ` – ${event.end_date}` : ''}
+                                    ${event.multi_day ? '<span class="badge-multi-day">Multi-Day</span>' : event.end_date && event.end_date !== event.start_date ? '<span class="badge-multi-night">Multi-Night</span>' : ''}
+                                </span>
+                                <input type="date" class="edit-input" value="${event.start_date}" data-field="start_date">
+                            </div>
+                            <div class="detail-item" ${!event.end_date || event.end_date === event.start_date ? 'style="display:none"' : ''}>
+                                <span class="detail-label">End Date:</span>
+                                <input type="date" class="edit-input" value="${event.end_date || ''}" data-field="end_date">
                             </div>
                             
                             <div class="detail-item">
