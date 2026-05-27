@@ -152,6 +152,7 @@ VENUES = {
     "improv_tx": {
         "name": "Improv Houston",
         "url": "https://improvtx.com/calendar/-/",
+        "venue_url": "https://improvtx.com/houston/calendar/",
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
@@ -1088,7 +1089,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     print(f"  ✓ Found {len(events)} events")
 
     for event in events:
-        event['venue_url'] = venue.get('url', '')
+        event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
 
     # Weekly mode: check for canceled events
     if mode == 'weekly':
