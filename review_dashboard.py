@@ -179,8 +179,8 @@ def load_pending_events():
     
     c.execute(f'''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
              multi_day, venue, location, city, state,
-             price, ticket_url, description, genre, confidence, notes, event_type, visible,
-             sold_out, date_changed, openers, event_url
+             price, ticket_url, event_url, venue_url, description, genre, confidence, notes, event_type, visible,
+             sold_out, date_changed, openers
              FROM events WHERE status = 'pending' ORDER BY start_date ASC''')
     
     events = []
@@ -200,16 +200,17 @@ def load_pending_events():
             'state': row[11],
             'price': row[12],
             'ticket_url': row[13],
-            'description': row[14],
-            'genre': row[15],
-            'confidence': json.loads(row[16]) if row[16] else {},
-            'notes': row[17] or '',
-            'event_type': row[18] or 'music',
-            'visible': row[19] if row[19] is not None else True,
-            'sold_out': row[20] if row[20] is not None else False,
-            'date_changed': row[21] if row[21] is not None else False,
-            'openers': row[22],
-            'event_url': row[23]
+            'event_url': row[14],
+            'venue_url': row[15],
+            'description': row[16],
+            'genre': row[17],
+            'confidence': json.loads(row[18]) if row[18] else {},
+            'notes': row[19] or '',
+            'event_type': row[20] or 'music',
+            'visible': row[21] if row[21] is not None else True,
+            'sold_out': row[22] if row[22] is not None else False,
+            'date_changed': row[23] if row[23] is not None else False,
+            'openers': row[24]
         })
     
     conn.close()
@@ -315,14 +316,14 @@ def published_events():
     if DATABASE_URL:
         c.execute('''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                      multi_day, venue, location, city, state,
-                     price, ticket_url, event_url, description, genre, notes
+                     price, ticket_url, event_url, venue_url, description, genre, notes
                      FROM events 
                      WHERE status = 'approved'
                      ORDER BY start_date ASC''')
     else:
         c.execute('''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                      multi_day, venue, location, city, state,
-                     price, ticket_url, event_url, description, genre, notes
+                     price, ticket_url, event_url, venue_url, description, genre, notes
                      FROM events 
                      WHERE status = 'approved'
                      ORDER BY start_date ASC''')
@@ -345,9 +346,10 @@ def published_events():
             'price': row[12],
             'ticket_url': row[13],
             'event_url': row[14],
-            'description': row[15],
-            'genre': row[16],
-            'notes': row[17]
+            'venue_url': row[15],
+            'description': row[16],
+            'genre': row[17],
+            'notes': row[18]
         })
     conn.close()
     return render_template('published.html', events=events)
@@ -478,7 +480,7 @@ def calendar():
     vis = 'true' if DATABASE_URL else '1'
     c.execute(f'''SELECT name, start_date, end_date, doors_time, start_time, end_time,
                          multi_day, venue, location, city,
-                         price, genre, description, event_type, sold_out, event_url, ticket_url
+                         price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url
                          FROM events
                          WHERE status = 'approved'
                          AND visible = {vis}
@@ -503,7 +505,8 @@ def calendar():
             'event_type': row[13],
             'sold_out': row[14] if row[14] is not None else False,
             'event_url': row[15],
-            'ticket_url': row[16]
+            'ticket_url': row[16],
+            'venue_url': row[17]
         })
     conn.close()
     venues = sorted(set(e['venue'] for e in events if e['venue']))
@@ -645,7 +648,7 @@ def filter_events():
     
     query = '''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                multi_day, venue, location, city, state,
-               price, ticket_url, description, genre, confidence, notes, status, created_at,
+               price, ticket_url, venue_url, description, genre, confidence, notes, status, created_at,
                event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id
                FROM events WHERE 1=1'''
     params = []
@@ -714,19 +717,20 @@ def filter_events():
             'state': row[11],
             'price': row[12],
             'ticket_url': row[13],
-            'description': row[14],
-            'genre': row[15],
-            'confidence': json.loads(row[16]) if row[16] else {},
-            'notes': row[17],
-            'status': row[18],
-            'created_at': row[19],
-            'event_type': row[20] or 'music',
-            'visible': row[21] if row[21] is not None else True,
-            'sold_out': row[22] if row[22] is not None else False,
-            'date_changed': row[23] if row[23] is not None else False,
-            'openers': row[24],
-            'event_url': row[25],
-            'duplicate_of_id': row[26]
+            'venue_url': row[14],
+            'description': row[15],
+            'genre': row[16],
+            'confidence': json.loads(row[17]) if row[17] else {},
+            'notes': row[18],
+            'status': row[19],
+            'created_at': row[20],
+            'event_type': row[21] or 'music',
+            'visible': row[22] if row[22] is not None else True,
+            'sold_out': row[23] if row[23] is not None else False,
+            'date_changed': row[24] if row[24] is not None else False,
+            'openers': row[25],
+            'event_url': row[26],
+            'duplicate_of_id': row[27]
         }
         event['overall_confidence'] = calculate_confidence(event)
         events.append(event)

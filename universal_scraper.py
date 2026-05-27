@@ -112,11 +112,12 @@ VENUES = {
         "wait_time": 5
     },
     "continental_club": {
-    "name": "Continental Club Houston",
-    "city": "Houston",
-    "state": "TX",
-    "timely_calendar_id": "54706359"
-},
+        "name": "Continental Club Houston",
+        "city": "Houston",
+        "state": "TX",
+        "timely_calendar_id": "54706359",
+        "url": "https://www.continentalclub.com/houston",
+    },
     "woodland_pavilion": {
         "name": "Cynthia Woods Mitchell Pavilion",
         "url": "https://www.woodlandscenter.org/events",
@@ -1082,9 +1083,12 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             venue_instruction=venue_instruction,
             llm=llm
         )
-
+    
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
+
+    for event in events:
+        event['venue_url'] = venue.get('url', '')
 
     # Weekly mode: check for canceled events
     if mode == 'weekly':
@@ -1180,11 +1184,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
             c.execute(f'''INSERT INTO events
                             (name, start_date, end_date, doors_time, start_time, end_time,
                             multi_day, venue, location, city, state,
-                            price, ticket_url, event_url, description, genre, confidence, status, created_at,
+                            price, ticket_url, event_url, venue_url, description, genre, confidence, status, created_at,
                             event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
-                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                         (event['name'],
-                        event.get('start_date', event.get('start_date')),
+                        event.get('start_date'),
                         event.get('end_date'),
                         event.get('doors_time'),
                         event.get('start_time'),
@@ -1194,6 +1198,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                         event.get('city', ''), event.get('state', ''),
                         event.get('price'), event.get('ticket_url'),
                         event.get('event_url'),
+                        event.get('venue_url', ''),
                         event.get('description'), event.get('genre'),
                         json.dumps(event.get('confidence', {})),
                         status, datetime.now().isoformat(),
