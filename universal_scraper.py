@@ -2,6 +2,7 @@ import os
 import json
 import time
 import sqlite3
+from dateutil.utils import today
 import requests
 from datetime import datetime, timedelta
 
@@ -203,7 +204,21 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3
-    }
+    },
+    "houcalendar": {
+        "name": "Houston Cultural Events Calendar",
+        "ical_url": "https://calendar.google.com/calendar/ical/k762aibsv1ictlhfcpbe3hpruq9900im%40import.calendar.google.com/public/basic.ics",
+        "city": "Houston",
+        "state": "TX",
+        "scraper": "google_ics",
+    },
+        "houston_city_calendar": {
+        "name": "City of Houston",
+        "ical_url": "https://outlook.office365.com/owa/calendar/378a27e8d0ee477ebd4c9db5ce3a600f@houstontx.gov/9d0692828d624e8bb74ce935644940f417387657915531835411/calendar.ics",
+        "city": "Houston",
+        "state": "TX",
+        "scraper": "google_ics",
+    },
 }
 
 def get_content_hash(content):
@@ -583,7 +598,8 @@ def scrape_google_ics(venue_config, mode='daily'):
     venue_name = venue_config['name']
     tz = pytz.timezone('America/Chicago')
     today = datetime.now(tz).date()
-    end_date = today + timedelta(days=30)
+    days_out = venue_config.get('days_out', 365)
+    end_date = today + timedelta(days=days_out)
 
     try:
         response = requests.get(ical_url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
@@ -617,9 +633,8 @@ def scrape_google_ics(venue_config, mode='daily'):
             dtstart = dtstart.astimezone(tz)
             event_date = dtstart.date()
             start_time = dtstart.strftime('%H:%M')
-
-        if start_time is None:
-            continue
+            if start_time == '00:00':
+                start_time = None
 
         # Determine event type
         title_lower = summary_lower
@@ -650,6 +665,9 @@ def scrape_google_ics(venue_config, mode='daily'):
 
         description = str(component.get('DESCRIPTION', '')) or None
 
+        location = str(component.get('LOCATION', '')).strip()
+        venue = location.split(',')[0].strip() if location else venue_name  
+        
         event = {
             'name': name.strip(),
             'start_date': event_date.strftime('%Y-%m-%d'),
@@ -658,13 +676,13 @@ def scrape_google_ics(venue_config, mode='daily'):
             'start_time': start_time,
             'end_time': None,
             'doors_time': None,
-            'venue': venue_name,
+            'venue': venue,
             'location': None,
             'city': city,
             'state': state,
             'price': None,
+            'event_url': str(component.get('URL', '')) or None,
             'ticket_url': None,
-            'event_url': None,
             'description': description,
             'genre': None,
             'event_type': event_type,
@@ -744,7 +762,7 @@ def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'
     if "White Oak" in venue_name:
         char_limit = 100000
     else:
-        char_limit = 20000
+        char_limit = 100000
     
     system_prompt = f"""You are an expert at extracting structured event data from venue websites.
 Extract ALL events from the provided text into a JSON array. For each event:
@@ -1073,7 +1091,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
     else:
-        char_limit = 60000 if venue.get('paginated') else 20000
+        char_limit = 100000 if venue.get('paginated') else 100000
         venue_instruction = venue.get('venue_instruction', '')
         events_data = extract_events_with_llm_raw(
             page_text[:char_limit],
@@ -1187,7 +1205,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             multi_day, venue, location, city, state,
                             price, ticket_url, event_url, venue_url, description, genre, confidence, status, created_at,
                             event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
-                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                         (event['name'],
                         event.get('start_date'),
                         event.get('end_date'),
