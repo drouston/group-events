@@ -1229,6 +1229,10 @@ def save_to_database(events, mode='daily', auto_approve=False):
         except Exception as e:
             print(f"Error inserting {event['name']}: {e}")
 
+    conn.commit()
+    conn.close()
+    print(f"  ✓ Inserted {inserted}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
+
 def detect_existing_duplicates(dry_run=False):
     """Scan the events table for possible duplicates and update their status"""
     from difflib import SequenceMatcher
