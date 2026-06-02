@@ -1160,7 +1160,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     for event in events:
         try:
-            # Exact duplicate check: venue + name + start_date + start_time
+            # Exact duplicate check: name + start_date + venue + start_time
             c.execute(f'''SELECT id FROM events
                             WHERE name = {ph} AND start_date = {ph}
                             AND venue = {ph}
@@ -1170,13 +1170,30 @@ def save_to_database(events, mode='daily', auto_approve=False):
                         event.get('start_time'), event.get('start_time')))
             if c.fetchone():
                 skipped += 1
-                print(f"  ⊘ Exact duplicate skipped: {event['name']}")
+                continue
+
+            # Near-match check: same name + start_date + venue, different start_time (ICS time update)
+            # Single result means it's the same event with an updated time — update in place
+            c.execute(f'''SELECT id, start_time FROM events
+                            WHERE name = {ph} AND start_date = {ph} AND venue = {ph}''',
+                        (event['name'], event.get('start_date'), event['venue']))
+            near = c.fetchall()
+            if len(near) == 1:
+                existing_id, existing_time = near[0]
+                new_time = event.get('start_time')
+                if existing_time != new_time:
+                    c.execute(f'''UPDATE events SET start_time = {ph}, end_time = {ph}
+                                  WHERE id = {ph}''',
+                              (new_time, event.get('end_time'), existing_id))
+                    print(f"  ↻ Time updated: {event['name']} ({existing_time} → {new_time})")
+                skipped += 1
                 continue
 
             # Partial duplicate check: same venue + start_date, similar name
+            # Only check against pending/approved — excluding possible_duplicate prevents cascade chains
             c.execute(f'''SELECT id, name FROM events
                             WHERE venue = {ph} AND start_date = {ph}
-                            AND status != 'rejected' ''',
+                            AND status IN ('pending', 'approved') ''',
                         (event['venue'], event.get('start_date')))
             existing = c.fetchall()
             status = 'approved' if auto_approve else 'pending'
@@ -1243,17 +1260,17 @@ def detect_existing_duplicates(dry_run=False):
     ph = '%s' if DATABASE_URL else '?'
 
     # Only scan active events — skip already-flagged, rejected, canceled
-    c.execute('''SELECT id, name, date, venue FROM events
+    c.execute('''SELECT id, name, start_date, venue FROM events
                  WHERE status IN ('pending', 'approved')
                  ORDER BY id ASC''')
     rows = c.fetchall()
 
     groups = defaultdict(list)
-    for event_id, name, date, venue in rows:
-        groups[(venue, date)].append((event_id, name))
+    for event_id, name, start_date, venue in rows:
+        groups[(venue, start_date)].append((event_id, name))
 
     flagged = 0
-    for (venue, date), group in groups.items():
+    for (venue, start_date), group in groups.items():
         if len(group) < 2:
             continue
         for i in range(len(group)):
@@ -1265,7 +1282,7 @@ def detect_existing_duplicates(dry_run=False):
                     # Keep the older event (lower id); flag the newer one
                     orig_id, orig_name = (id_a, name_a) if id_a < id_b else (id_b, name_b)
                     dup_id, dup_name = (id_b, name_b) if id_a < id_b else (id_a, name_a)
-                    print(f"  ⚠ ({int(similarity*100)}%) #{dup_id} '{dup_name}' ~ #{orig_id} '{orig_name}' [{venue} {date}]")
+                    print(f"  ⚠ ({int(similarity*100)}%) #{dup_id} '{dup_name}' ~ #{orig_id} '{orig_name}' [{venue} {start_date}]")
                     if not dry_run:
                         c.execute(f'''UPDATE events SET status = 'possible_duplicate', duplicate_of_id = {ph}
                                       WHERE id = {ph}''', (orig_id, dup_id))
