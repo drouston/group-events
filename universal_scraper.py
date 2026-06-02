@@ -340,6 +340,37 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
     finally:
         driver.quit()
 
+def classify_event_types(events, llm='gpt4o-mini'):
+    """Batch classify event_type for events that don't have one set. Updates dicts in place."""
+    unclassified = [e for e in events if not e.get('event_type')]
+    if not unclassified:
+        return
+    items = [{'i': i, 'name': e['name']} for i, e in enumerate(unclassified)]
+    system_prompt = """Classify each event into exactly one of these types:
+music - concerts, live music, bands, DJs, music festivals
+comedy - stand-up comedy, improv, comedy nights
+open_mic - open mic nights
+happy_hour - happy hour specials
+performing_arts - theater, opera, ballet, orchestra, symphony, dance performances
+arts - gallery openings, art exhibitions, museum events, visual arts shows
+sports - games, matches, sporting events
+civic - government meetings, council sessions, committee meetings, public hearings, city business
+private_event - private parties, closed or invite-only events
+other - anything that doesn't fit above
+Return JSON: {"results": [{"i": 0, "type": "music"}, ...]}"""
+    try:
+        result = get_llm_response(system_prompt, json.dumps(items), llm)
+        for item in result.get('results', []):
+            idx = item.get('i')
+            if isinstance(idx, int) and 0 <= idx < len(unclassified):
+                unclassified[idx]['event_type'] = item.get('type', 'other')
+    except Exception as e:
+        print(f"  ⚠ Event type classification failed: {e}")
+    for event in events:
+        if not event.get('event_type'):
+            event['event_type'] = 'other'
+
+
 def scrape_timely_api(venue_config, mode='daily'):
     """Fetch events from Timely API for venues using Timely calendar"""
     import time as time_module
@@ -374,21 +405,7 @@ def scrape_timely_api(venue_config, mode='daily'):
 
                 title_lower = item.get('title', '').lower()
                 is_private = any(phrase in title_lower for phrase in ['private party', 'closed for private', 'private event'])
-
-                if is_private:
-                    event_type = 'private_event'
-                elif any(phrase in title_lower for phrase in ['comedy', 'stand-up', 'standup']):
-                    event_type = 'comedy'
-                elif any(phrase in title_lower for phrase in ['open mic', 'open-mic']):
-                    event_type = 'open_mic'
-                elif any(phrase in title_lower for phrase in ['happy hour', 'happyhour']):
-                    event_type = 'happy_hour'
-                elif any(phrase in title_lower for phrase in ['storytime', 'storytelling', 'gust', 'trivia', 'bingo', 'karaoke']):
-                    event_type = 'other'
-                else:
-                    event_type = 'music'
-
-                visible = event_type in ('music', 'comedy')
+                event_type = 'private_event' if is_private else None
 
                 event = {
                     'name': item.get('title', ''),
@@ -408,15 +425,15 @@ def scrape_timely_api(venue_config, mode='daily'):
                     'description': item.get('description_short', ''),
                     'genre': None,
                     'event_type': event_type,
-                    'visible': visible,
+                    'visible': False,
                     'sold_out': False,
                     'date_changed': False,
                     'openers': None,
                     'confidence': {}
                 }
-                
+
                 events.append(event)
-            
+
             if not data.get('data', {}).get('has_next'):
                 break
             page += 1
@@ -425,6 +442,9 @@ def scrape_timely_api(venue_config, mode='daily'):
             print(f"  ✗ Timely API error (page {page}): {e}")
             break
     
+    classify_event_types(events)
+    for event in events:
+        event['visible'] = event.get('event_type') in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
     print(f"  ✓ Fetched {len(events)} events from Timely API")
     return events
 
@@ -636,25 +656,9 @@ def scrape_google_ics(venue_config, mode='daily'):
             if start_time == '00:00':
                 start_time = None
 
-        # Determine event type
-        title_lower = summary_lower
-        is_private = any(p in title_lower for p in ['private party', 'closed for private', 'private event'])
-        if is_private:
-            event_type = 'private_event'
-        elif any(p in title_lower for p in ['comedy', 'stand-up', 'standup', 'punchline']):
-            event_type = 'comedy'
-        elif any(p in title_lower for p in ['open mic', 'open-mic']):
-            event_type = 'open_mic'
-        elif any(p in title_lower for p in ['happy hour', 'happyhour']):
-            event_type = 'happy_hour'
-        elif any(p in title_lower for p in ['movie', 'film', 'cinema']):
-            event_type = 'other'
-        elif any(p in title_lower for p in ['storytime', 'storytelling', 'trivia', 'bingo', 'karaoke']):
-            event_type = 'other'
-        else:
-            event_type = 'music'
-
-        visible = event_type in ('music', 'comedy')
+        # Pre-filter private events; all others classified in batch after loop
+        is_private = any(p in summary_lower for p in ['private party', 'closed for private', 'private event'])
+        event_type = 'private_event' if is_private else None
 
         # Clean up summary prefix
         name = summary
@@ -686,7 +690,7 @@ def scrape_google_ics(venue_config, mode='daily'):
             'description': description,
             'genre': None,
             'event_type': event_type,
-            'visible': visible,
+            'visible': False,
             'sold_out': False,
             'date_changed': False,
             'openers': None,
@@ -694,6 +698,9 @@ def scrape_google_ics(venue_config, mode='daily'):
         }
         events.append(event)
 
+    classify_event_types(events)
+    for event in events:
+        event['visible'] = event.get('event_type') in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
     print(f"  ✓ Fetched {len(events)} events from Google Calendar ICS")
     return events
 
@@ -784,7 +791,7 @@ Extract ALL events from the provided text into a JSON array. For each event:
 - description: Brief description if available
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
-- event_type: Classify the event as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', or 'other'. Use 'music' as default if unclear.
+- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'performing_arts', 'arts', 'sports', 'civic', 'private_event', or 'other'. Use 'music' as default if unclear.
 - confidence: Object with field-level confidence scores (0-1)
 IMPORTANT: Look carefully for event times. They may appear as:
 - "6:30pm" or "7:00pm"
@@ -829,7 +836,7 @@ Fields to extract:
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
-- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'private_event', 'sports', or 'other'. Use 'music' as default if unclear.
+- event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'performing_arts', 'arts', 'sports', 'civic', 'private_event', or 'other'. Use 'music' as default if unclear.
 - sold_out: true if event is sold out, false otherwise
 - date_changed: true if event has been rescheduled or date changed, false otherwise
 - openers: Comma-separated list of opening acts if mentioned, otherwise null
@@ -1199,7 +1206,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
             status = 'approved' if auto_approve else 'pending'
             duplicate_of_id = None
             event_type = event.get('event_type', 'music')
-            visible = event_type in ('music', 'comedy')
+            visible = event_type in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
             if not event.get('genre') and event_type == 'comedy':
                 event['genre'] = 'Comedy'
             for ex_id, ex_name in existing:
@@ -1251,7 +1258,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
     print(f"  ✓ Inserted {inserted}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
 
 def detect_existing_duplicates(dry_run=False):
-    """Scan the events table for possible duplicates and update their status"""
+    """Scan the events table for possible duplicates and update their stads"""
     from difflib import SequenceMatcher
     from collections import defaultdict
 
