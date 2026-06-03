@@ -182,7 +182,7 @@ def load_pending_events():
              price, ticket_url, event_url, venue_url, description, genre, confidence, notes, event_type, visible,
              sold_out, date_changed, openers
              FROM events WHERE status = 'pending' ORDER BY start_date ASC''')
-    
+
     events = []
     for row in c.fetchall():
         events.append({
@@ -190,9 +190,9 @@ def load_pending_events():
             'name': row[1],
             'start_date': row[2],
             'end_date': row[3],
-            'doors_time': row[4],
-            'start_time': row[5],
-            'end_time': row[6],
+            'doors_time': str(row[4]) if row[4] is not None else None,
+            'start_time': str(row[5]) if row[5] is not None else None,
+            'end_time': str(row[6]) if row[6] is not None else None,
             'multi_day': row[7],
             'venue': row[8],
             'location': row[9],
@@ -335,9 +335,9 @@ def published_events():
             'name': row[1],
             'start_date': row[2],
             'end_date': row[3],
-            'doors_time': row[4],
-            'start_time': row[5],
-            'end_time': row[6],
+            'doors_time': str(row[4]) if row[4] is not None else None,
+            'start_time': str(row[5]) if row[5] is not None else None,
+            'end_time': str(row[6]) if row[6] is not None else None,
             'multi_day': row[7],
             'venue': row[8],
             'location': row[9],
@@ -708,9 +708,9 @@ def filter_events():
             'name': row[1],
             'start_date': row[2],
             'end_date': row[3],
-            'doors_time': row[4],
-            'start_time': row[5],
-            'end_time': row[6],
+            'doors_time': str(row[4]) if row[4] is not None else None,
+            'start_time': str(row[5]) if row[5] is not None else None,
+            'end_time': str(row[6]) if row[6] is not None else None,
             'multi_day': row[7],
             'venue': row[8],
             'location': row[9],
