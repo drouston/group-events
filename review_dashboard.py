@@ -438,27 +438,28 @@ def debug():
 def stats():
     conn = get_db_connection()
     c = conn.cursor()
-    
+    ph = '%s' if DATABASE_URL else '?'
+
     # Total events by status
     c.execute("SELECT status, COUNT(*) FROM events GROUP BY status")
     status_counts = dict(c.fetchall())
-    
+
     # Events by venue
-    c.execute("""SELECT venue, COUNT(*) FROM events 
+    c.execute("""SELECT venue, COUNT(*) FROM events
                  WHERE status = 'approved' GROUP BY venue""")
     venue_counts = dict(c.fetchall())
-    
+
     # Upcoming events (next 30 days)
     today = datetime.now().date().isoformat()
     future = (datetime.now().date() + timedelta(days=30)).isoformat()
-    c.execute("""SELECT COUNT(*) FROM events 
-                 WHERE status = 'approved' 
-                 AND start_date >= ? AND start_date <= ?""", (today, future))
+    c.execute(f"""SELECT COUNT(*) FROM events
+                 WHERE status = 'approved'
+                 AND start_date >= {ph} AND start_date <= {ph}""", (today, future))
     upcoming_count = c.fetchone()[0]
-    
+
     # Events by genre
-    c.execute("""SELECT genre, COUNT(*) FROM events 
-                 WHERE status = 'approved' AND genre IS NOT NULL 
+    c.execute("""SELECT genre, COUNT(*) FROM events
+                 WHERE status = 'approved' AND genre IS NOT NULL
                  GROUP BY genre""")
     genre_counts = dict(c.fetchall())
     

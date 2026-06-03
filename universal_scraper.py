@@ -219,6 +219,13 @@ VENUES = {
         "state": "TX",
         "scraper": "google_ics",
     },
+    "big_easy": {
+        "name": "The Big Easy Social and Pleasure Club",
+        "url": "https://www.thebigeasyblues.com/the-big-easy-music-calendar/",
+        "city": "Houston",
+        "state": "TX",
+        "venue_instruction": "Extract all live music events. This is a blues and roots music venue.",
+    },
 }
 
 def get_content_hash(content):
@@ -331,10 +338,23 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
         for tag in soup(['script', 'style']):
             tag.decompose()
         page_text = soup.get_text(separator='\n', strip=True)
-        
+
+        # Append all external links so the LLM can extract ticket_url / event_url
+        links_seen = set()
+        link_lines = []
+        for a in soup.find_all('a', href=True):
+            href = a['href'].strip()
+            if not href or href.startswith('#') or href.startswith('mailto:') or href in links_seen:
+                continue
+            links_seen.add(href)
+            label = a.get_text(strip=True) or ''
+            link_lines.append(f"{label} -> {href}")
+        if link_lines:
+            page_text += '\n\nLINKS:\n' + '\n'.join(link_lines)
+
         print(f"Extracted {len(page_text)} characters")
         print(f"HTML length: {len(html)} characters")  # Show raw HTML size
-        
+
         return page_text, html  # Return both
         
     finally:
@@ -1098,7 +1118,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
     else:
-        char_limit = 100000 if venue.get('paginated') else 100000
+        char_limit = 100000
         venue_instruction = venue.get('venue_instruction', '')
         events_data = extract_events_with_llm_raw(
             page_text[:char_limit],
@@ -1386,7 +1406,8 @@ if __name__ == "__main__":
                 print(f"\n{'='*60}")
                 print(f"DRY RUN — {len(events)} events extracted, not saved")
                 for e in events:
-                    print(f"  {e.get('start_date')} | {e.get('end_date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
+                    ticket = e.get('ticket_url') or e.get('event_url') or '—'
+                    print(f"  {e.get('start_date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('name')} | {ticket}")
                 print(f"{'='*60}")
             else:
                 if args.dry_run:

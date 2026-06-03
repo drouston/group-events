@@ -306,7 +306,9 @@
                             <div class="event-details">
                                 <div class="event-detail">
                                     <span class="event-detail-icon">📍</span>
-                                    <span>${event.venue}${event.location ? ' · ' + event.location : ''}</span>
+                                    <span>${event.venue_url
+                                        ? `<a href="${event.venue_url}" target="_blank" style="color: inherit; text-decoration: none; border-bottom: 1px solid #666;">${event.venue}</a>`
+                                        : event.venue}${event.location ? ' · ' + event.location : ''}</span>
                                 </div>
                                 ${startTime ? `
                                 <div class="event-detail">
