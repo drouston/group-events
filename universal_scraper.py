@@ -212,7 +212,7 @@ VENUES = {
         "state": "TX",
         "scraper": "google_ics",
     },
-        "houston_city_calendar": {
+    "houston_city_calendar": {
         "name": "City of Houston",
         "ical_url": "https://outlook.office365.com/owa/calendar/378a27e8d0ee477ebd4c9db5ce3a600f@houstontx.gov/9d0692828d624e8bb74ce935644940f417387657915531835411/calendar.ics",
         "city": "Houston",
@@ -840,8 +840,8 @@ TITLE CLEANUP (apply before setting name):
 
 Fields to extract:
 - name: Clean event name/title (see TITLE CLEANUP above)
-- start_date: YYYY-MM-DD format, the first/only date of the event (use 2026 for dates without year)
-- end_date: YYYY-MM-DD format if the event spans multiple dates, otherwise null
+- start_date: YYYY-MM-DD format
+- end_date: YYYY-MM-DD format 
 - multi_day: true if this is a single continuous multi-day event (expo, festival, conference, multi-day sports tournament). false for single-day events AND for multi-night comedy/concert runs where the same act performs on separate nights.
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
@@ -1339,7 +1339,7 @@ def archive_past_events(buffer_days=1):
                  created_at, approved_at, event_type, visible, sold_out, date_changed,
                  openers, event_url
                  FROM events
-                 WHERE status = 'approved' AND start_date < %s''', (cutoff,))
+                 WHERE status IN ('approved', 'possible_duplicate', 'rejected', 'canceled') AND start_date < %s''', (cutoff,))
     rows = c.fetchall()
     archived_at = datetime.now().isoformat()
     archived = 0
@@ -1407,7 +1407,7 @@ if __name__ == "__main__":
                 print(f"DRY RUN — {len(events)} events extracted, not saved")
                 for e in events:
                     ticket = e.get('ticket_url') or e.get('event_url') or '—'
-                    print(f"  {e.get('start_date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('name')} | {ticket}")
+                    print(f"  {e.get('start_date')} | {e.get('end_date')} |{e.get('start_time')} | {e.get('venue')} | {e.get('name')} | {ticket}")
                 print(f"{'='*60}")
             else:
                 if args.dry_run:
