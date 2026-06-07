@@ -218,6 +218,7 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "scraper": "google_ics",
+        "duplicate_threshold": 0.7,
     },
     "big_easy": {
         "name": "The Big Easy Social and Pleasure Club",
@@ -225,6 +226,15 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "venue_instruction": "Extract all live music events. This is a blues and roots music venue.",
+    },
+    "punchline_htx": {
+        "name": "Punch Line Houston",
+        "url": "https://www.punchlinehtx.com/shows",
+        "city": "Houston",
+        "state": "TX",
+        "event_type": "comedy",
+        "venue_instruction": "Extract all comedy shows. This is a comedy club.",
+        "scrolls": 5,
     },
 }
 
@@ -1162,6 +1172,8 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini'):
 def save_to_database(events, mode='daily', auto_approve=False):
     """Save events to database with exact and partial duplicate detection"""
     from difflib import SequenceMatcher
+    dup_threshold_map = {v['name']: v.get('duplicate_threshold', 0.5) for v in VENUES.values()}
+    auto_approve_map = {v['name']: v.get('auto_approve', False) for v in VENUES.values()}
     today = datetime.now().strftime('%Y-%m-%d')
 
     #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
@@ -1223,17 +1235,19 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             AND status IN ('pending', 'approved') ''',
                         (event['venue'], event.get('start_date')))
             existing = c.fetchall()
-            status = 'approved' if auto_approve else 'pending'
+            venue_auto_approve = auto_approve or auto_approve_map.get(event['venue'], False)
+            status = 'approved' if venue_auto_approve else 'pending'
             duplicate_of_id = None
             event_type = event.get('event_type', 'music')
             visible = event_type in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
             if not event.get('genre') and event_type == 'comedy':
                 event['genre'] = 'Comedy'
+            dup_threshold = dup_threshold_map.get(event['venue'], 0.5)
             for ex_id, ex_name in existing:
                 similarity = SequenceMatcher(
                     None, event['name'].lower(), ex_name.lower()
                 ).ratio()
-                if similarity >= 0.5:
+                if similarity >= dup_threshold:
                     status = 'possible_duplicate'
                     duplicate_of_id = ex_id
                     print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
