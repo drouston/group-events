@@ -1370,7 +1370,7 @@ def archive_past_events(buffer_days=1):
                        row[8], row[9], row[10], row[11], row[12],
                        row[13], row[14], row[15], row[16], row[17], row[18], row[19],
                        row[20], row[21], archived_at, row[22], row[23], row[24],
-                       row[25], row[26], row[27]))
+                       row[25], row[26]))
             c.execute('DELETE FROM events WHERE id = %s', (row[0],))
             archived += 1
         except Exception as e:
