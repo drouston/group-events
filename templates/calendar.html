@@ -1,179 +1,353 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Houston Music Events Calendar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Houston Event List</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
             background: #f8f9fa;
+            color: #222;
         }
-        
+
         .header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 30px 20px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        
+
         .header h1 {
             max-width: 1200px;
             margin: 0 auto;
             font-size: 32px;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
         }
-        
+
+        /* ---------- Highlight cards ---------- */
+        .highlights-section {
+            margin-bottom: 24px;
+        }
+
+        .highlights-label {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
+        .highlights-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 700px) {
+            .highlights-grid { grid-template-columns: 1fr; }
+        }
+
+        .highlight-card {
+            background: white;
+            border-radius: 10px;
+            padding: 16px 18px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .highlight-card-title {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 10px;
+            font-weight: 600;
+        }
+
+        .highlight-event {
+            padding: 6px 0;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+        }
+
+        .highlight-event:last-child { border-bottom: none; }
+
+        .highlight-event-name {
+            font-size: 13px;
+            font-weight: 600;
+            color: #222;
+        }
+
+        .highlight-event-meta {
+            font-size: 11px;
+            color: #888;
+            margin-top: 1px;
+        }
+
+        .highlight-event-chip {
+            flex-shrink: 0;
+        }
+
+        .highlight-empty {
+            font-size: 13px;
+            color: #aaa;
+            padding: 8px 0;
+        }
+
+        /* ---------- Type summary cards ---------- */
+        .types-section { margin-bottom: 24px; }
+
+        .types-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+        }
+
+        @media (max-width: 700px) {
+            .types-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+
+        .type-card {
+            border-radius: 10px;
+            padding: 14px;
+            cursor: pointer;
+            text-align: center;
+            border: none;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+
+        .type-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+        }
+
+        .type-card-count {
+            font-size: 24px;
+            font-weight: 700;
+            margin-top: 4px;
+        }
+
+        .type-card-label {
+            font-size: 12px;
+            margin-top: 2px;
+            opacity: 0.85;
+        }
+
+        .type-music { background: #ede7f6; color: #5e35b1; }
+        .type-comedy { background: #fbe9e7; color: #d84315; }
+        .type-sports { background: #e0f2f1; color: #00695c; }
+        .type-performing_arts { background: #fff8e1; color: #f9a825; }
+        .type-festival { background: #fce4ec; color: #ad1457; }
+        .type-other { background: #eceff1; color: #455a64; }
+
+        .chip-music { background: #ede7f6; color: #5e35b1; }
+        .chip-comedy { background: #fbe9e7; color: #d84315; }
+        .chip-sports { background: #e0f2f1; color: #00695c; }
+        .chip-performing_arts { background: #fff8e1; color: #f9a825; }
+        .chip-festival { background: #fce4ec; color: #ad1457; }
+        .chip-other { background: #eceff1; color: #455a64; }
+
+        /* ---------- Filters ---------- */
         .filters {
             background: white;
-            padding: 20px;
+            padding: 16px 20px;
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin-bottom: 16px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
             display: flex;
-            gap: 15px;
+            gap: 14px;
             flex-wrap: wrap;
+            align-items: flex-end;
         }
-        
+
         .filter-group {
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
-        
+
         .filter-group label {
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 600;
             color: #666;
             text-transform: uppercase;
         }
-        
+
         .filter-group select,
         .filter-group input {
-            padding: 8px 12px;
+            padding: 7px 10px;
             border: 1px solid #ddd;
             border-radius: 4px;
-            font-size: 14px;
+            font-size: 13px;
         }
-        
-        .calendar-grid {
-            display: grid;
-            gap: 15px;
-        }
-        
-        .day-section {
+
+        /* ---------- Table ---------- */
+        #event-table-anchor { position: relative; top: -10px; }
+
+        .table-wrap {
             background: white;
             border-radius: 8px;
-            overflow: hidden;
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            overflow: hidden;
         }
-        
-        .day-header {
-            background: #667eea;
-            color: white;
-            padding: 12px 20px;
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        .date-row td {
+            background: #f3f3fb;
             font-weight: 600;
+            padding: 10px 16px;
+            font-size: 13px;
+            color: #444;
         }
-        
-        .day-date {
-            font-size: 18px;
+
+        .event-row td {
+            padding: 10px 16px;
+            border-bottom: 1px solid #f0f0f0;
+            vertical-align: top;
         }
-        
-        .day-count {
-            font-size: 12px;
-            opacity: 0.9;
+
+        .event-row:last-child td { border-bottom: none; }
+
+        .col-time { color: #888; width: 72px; white-space: nowrap; }
+        .col-date { color: #888; width: 90px; white-space: nowrap; }
+        .col-venue { color: #888; }
+        .col-price { text-align: right; color: #888; white-space: nowrap; }
+
+        .col-subtext {
+            font-size: 11px;
+            color: #aaa;
             margin-top: 2px;
         }
-        
-        .events-list {
-            padding: 15px;
-        }
-        
-        .event-card {
-            padding: 15px;
-            border-left: 4px solid #667eea;
-            background: #f8f9fa;
-            margin-bottom: 10px;
-            border-radius: 4px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }
-        
-        .event-card:hover {
-            transform: translateX(5px);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }
-        
-        .event-card:last-child {
-            margin-bottom: 0;
-        }
-        
-        .event-name {
-            font-size: 18px;
+
+        .type-chip {
+            display: inline-block;
+            font-size: 11px;
             font-weight: 600;
-            color: #333;
-            margin-bottom: 8px;
+            padding: 2px 9px;
+            border-radius: 10px;
+            white-space: nowrap;
         }
-        
-        .event-details {
+
+        .sold-out-link {
+            color: #c62828;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        .event-name-link {
+            color: inherit;
+            text-decoration: none;
+            border-bottom: 1px solid #ccc;
+        }
+
+        .no-events {
+            text-align: center;
+            padding: 50px 20px;
+            color: #999;
+        }
+
+        .pagination {
             display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            font-size: 14px;
+            justify-content: center;
+            align-items: center;
+            gap: 16px;
+            margin-top: 16px;
+            padding: 10px 0;
+        }
+
+        .pagination button {
+            padding: 8px 16px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            color: #444;
+        }
+
+        .pagination button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        .pagination button:not(:disabled):hover {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        #page-indicator {
+            font-size: 13px;
             color: #666;
         }
 
-        .event-detail {
-            flex: 0 0 auto;
-        }
-        
-        .event-detail {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        
-        .event-detail-icon {
-            font-size: 16px;
-        }
-        
-        .genre-tag {
-            display: inline-block;
-            padding: 4px 12px;
-            background: #e3f2fd;
-            color: #1976d2;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-top: 8px;
-        }
-        
-        .no-events {
-            text-align: center;
-            padding: 60px 20px;
-            color: #999;
-        }
-        
-        .no-events-icon {
-            font-size: 48px;
-            margin-bottom: 10px;
+        .event-sub { display: none; }
+
+        .col-type-mobile { display: none; }
+
+        /* Mobile collapsed row layout */
+        @media (max-width: 700px) {
+            .col-venue, .col-price, .col-type-desktop { display: none; }
+            .col-time-flat { display: none; }
+            .col-type-mobile { display: inline-block; }
+            .col-date { width: 56px; font-size: 12px; }
+            .event-row td { padding: 10px 12px; }
+            .event-name-cell {
+                display: flex;
+                justify-content: space-between;
+                align-items: baseline;
+                gap: 8px;
+            }
+            .event-sub {
+                display: block;
+                font-size: 12px;
+                color: #888;
+                margin-top: 3px;
+            }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🎵 Houston Music Events</h1>
+        <h1>Houston Event List</h1>
     </div>
-    
+
     <div class="container">
+
+        <!-- Highlight cards -->
+        <div class="highlights-section">
+            <div class="highlights-grid">
+                <div class="highlight-card">
+                    <div class="highlight-card-title">This Week</div>
+                    <div id="this-week-list"></div>
+                </div>
+                <div class="highlight-card">
+                    <div class="highlight-card-title">This Weekend (Thu–Sun)</div>
+                    <div id="this-weekend-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Type summary cards -->
+        <div class="types-section">
+            <div class="highlights-label">Browse by type</div>
+            <div class="types-grid" id="type-cards"></div>
+        </div>
+
+        <!-- Filters -->
         <div class="filters">
             <div class="filter-group">
                 <label>Venue</label>
@@ -184,7 +358,7 @@
                     {% endfor %}
                 </select>
             </div>
-            
+
             <div class="filter-group">
                 <label>Genre</label>
                 <select id="genre-filter">
@@ -194,50 +368,92 @@
                     {% endfor %}
                 </select>
             </div>
-            
+
+            <div class="filter-group">
+                <label>Type</label>
+                <select id="type-filter">
+                    <option value="">All Types</option>
+                    <option value="music">Music</option>
+                    <option value="comedy">Comedy</option>
+                    <option value="sports">Sports</option>
+                    <option value="performing_arts">Performing Arts</option>
+                    <option value="festival">Festivals</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+
             <div class="filter-group">
                 <label>From Date</label>
                 <input type="date" id="start-date">
             </div>
-            
+
             <div class="filter-group">
                 <label>To Date</label>
                 <input type="date" id="end-date">
             </div>
-            
+
             <div class="filter-group">
                 <label>&nbsp;</label>
-                <button onclick="applyFilters()" style="padding: 8px 20px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
-                    Apply Filters
+                <button onclick="applyFilters()" style="padding: 8px 18px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">
+                    Apply
                 </button>
             </div>
         </div>
-        
-        <div id="calendar-grid" class="calendar-grid">
-            <!-- Events will be rendered here -->
+
+        <div id="event-table-anchor"></div>
+        <div class="table-wrap">
+            <table id="event-table">
+                <tbody id="event-table-body"></tbody>
+            </table>
         </div>
+        <div id="no-events" class="no-events" style="display:none;">
+            <h3>No events found</h3>
+            <p>Try adjusting your filters</p>
+        </div>
+
+        <div id="pagination" class="pagination" style="display:none;">
+            <button id="prev-page" onclick="changePage(-1)">&larr; Previous</button>
+            <span id="page-indicator"></span>
+            <button id="next-page" onclick="changePage(1)">Next &rarr;</button>
+        </div>
+
     </div>
 
     <script>
         const allEvents = {{ events | tojson }};
-        
+
+        const TYPE_LABELS = {
+            music: 'Music',
+            comedy: 'Comedy',
+            sports: 'Sports',
+            performing_arts: 'Performing Arts',
+            festival: 'Festivals',
+            other: 'Other'
+        };
+
+        const CARD_ORDER = [
+            { type: 'music', icon: '🎵', label: 'Music' },
+            { type: 'comedy', icon: '🎤', label: 'Comedy' },
+            { type: 'sports', icon: '🏈', label: 'Sports' },
+            { type: 'performing_arts', icon: '🎭', label: 'Performing Arts' },
+            { type: 'festival', icon: '🎉', label: 'Festivals' },
+        ];
+
         function formatDate(dateStr) {
-            // Parse as local date, not UTC
             const [year, month, day] = dateStr.split('-');
             const date = new Date(year, month - 1, day);
-            
-            const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            
+            const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
             return {
                 dayName: days[date.getDay()],
                 month: months[date.getMonth()],
                 day: date.getDate(),
                 year: date.getFullYear(),
+                short: `${days[date.getDay()].slice(0,3)}, ${months[date.getMonth()]} ${date.getDate()}`,
                 full: `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
             };
         }
-        
+
         function formatTime(timeStr) {
             if (!timeStr) return null;
             const [hours, minutes] = timeStr.split(':');
@@ -246,136 +462,276 @@
             const displayHour = h % 12 || 12;
             return `${displayHour}:${minutes} ${ampm}`;
         }
-        
-        function groupEventsByDate(events) {
+
+        function todayStr() {
+            return new Date().toISOString().split('T')[0];
+        }
+
+        function filterActiveEvents(events) {
+            const ts = todayStr();
+            return events.filter(e => e.start_date >= ts);
+        }
+
+        // ---------- Highlight cards ----------
+        function renderHighlightList(containerId, events, showType) {
+            const el = document.getElementById(containerId);
+            if (!events.length) {
+                el.innerHTML = `<div class="highlight-empty">Nothing scheduled</div>`;
+                return;
+            }
+            el.innerHTML = events.map(e => {
+                const d = formatDate(e.start_date);
+                const t = formatTime(e.start_time);
+                return `
+                    <div class="highlight-event">
+                        <div>
+                            <div class="highlight-event-name">${e.name}</div>
+                            <div class="highlight-event-meta">${e.venue} · ${d.short}${t ? ', ' + t : ''}</div>
+                        </div>
+                        ${showType ? `<span class="highlight-event-chip">${typeChip(e)}</span>` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderHighlights() {
+            renderHighlightList('this-week-list', {{ this_week | tojson }}, true);
+            renderHighlightList('this-weekend-list', {{ this_weekend | tojson }}, false);
+        }
+
+        // ---------- Type cards ----------
+        function renderTypeCards() {
+            const counts = {};
+            filterActiveEvents(allEvents).forEach(e => {
+                const t = e.event_type || 'other';
+                counts[t] = (counts[t] || 0) + 1;
+            });
+
+            const container = document.getElementById('type-cards');
+            container.innerHTML = CARD_ORDER.map(c => `
+                <div class="type-card type-${c.type}" onclick="filterByType('${c.type}')">
+                    <div>${c.icon}</div>
+                    <div class="type-card-count">${counts[c.type] || 0}</div>
+                    <div class="type-card-label">${c.label}</div>
+                </div>
+            `).join('');
+        }
+
+        function filterByType(type) {
+            document.getElementById('type-filter').value = type;
+            applyFilters();
+            document.getElementById('event-table-anchor').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // ---------- Table rendering ----------
+        function groupByDate(events) {
             const grouped = {};
-            events.forEach(event => {
-                if (!grouped[event.start_date]) {
-                    grouped[event.start_date] = [];
-                }
-                grouped[event.start_date].push(event);
+            events.forEach(e => {
+                if (!grouped[e.start_date]) grouped[e.start_date] = [];
+                grouped[e.start_date].push(e);
             });
             return grouped;
         }
-        
-        function renderCalendar(events) {
-            const container = document.getElementById('calendar-grid');
-            
-            if (events.length === 0) {
-                container.innerHTML = `
-                    <div class="no-events">
-                        <div class="no-events-icon">📅</div>
-                        <h3>No events found</h3>
-                        <p>Try adjusting your filters</p>
-                    </div>
-                `;
+
+        function priceCell(e) {
+            if (e.sold_out) {
+                const link = e.ticket_url || e.event_url || e.venue_url;
+                return link
+                    ? `<a href="${link}" target="_blank" class="sold-out-link">Sold out</a>`
+                    : `<span class="sold-out-link">Sold out</span>`;
+            }
+            return e.price || '';
+        }
+
+        function nameCell(e) {
+            const link = e.ticket_url || e.event_url || e.venue_url;
+            const title = link
+                ? `<a href="${link}" target="_blank" class="event-name-link">${e.name}</a>`
+                : e.name;
+            return e.openers
+                ? `${title}<div class="col-subtext">w/ ${e.openers}</div>`
+                : title;
+        }
+
+        function typeChip(e) {
+            const t = e.event_type || 'other';
+            return `<span class="type-chip chip-${t}">${TYPE_LABELS[t] || t}</span>`;
+        }
+
+        function renderEventRow(e, showDate) {
+            const t = formatTime(e.start_time);
+            const price = priceCell(e);
+            const subParts = [e.venue];
+            if (showDate) {
+                subParts.push(formatDate(e.start_date).short);
+                if (t) subParts.push(t);
+            }
+            if (price) subParts.push(price);
+
+            return `
+                <tr class="event-row">
+                    ${showDate ? `<td class="col-date">${formatDate(e.start_date).short}</td>` : ''}
+                    <td class="col-time ${showDate ? 'col-time-flat' : ''}">${t || '—'}</td>
+                    <td>
+                        <div class="event-name-cell">
+                            <span>${nameCell(e)}</span>
+                            <span class="col-type-mobile">${typeChip(e)}</span>
+                        </div>
+                        <div class="event-sub">${subParts.join(' · ')}</div>
+                    </td>
+                    <td class="col-venue">
+                        <div>${e.venue}</div>
+                        ${e.location ? `<div class="col-subtext">${e.location}</div>` : ''}
+                    </td>
+                    <td class="col-type-desktop">
+                        <div>${typeChip(e)}</div>
+                        ${e.genre ? `<div class="col-subtext">${e.genre}</div>` : ''}
+                    </td>
+                    <td class="col-price">${price}</td>
+                </tr>
+            `;
+        }
+
+        // ---------- Pagination ----------
+        let currentPage = 0;
+        const ROWS_PER_PAGE = 20;
+
+        function addDays(dateStr, n) {
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const date = new Date(y, m - 1, d);
+            date.setDate(date.getDate() + n);
+            return date.toISOString().split('T')[0];
+        }
+
+        function paginateGrouped(events) {
+            // events are already sorted by start_date ascending.
+            // Bucket into rolling 7-day windows starting from the first event's date.
+            if (!events.length) return [];
+            const windows = [];
+            let windowStart = events[0].start_date;
+            let remaining = events;
+
+            while (remaining.length) {
+                const windowEnd = addDays(windowStart, 6);
+                const inWindow = remaining.filter(e => e.start_date <= windowEnd);
+                const rest = remaining.filter(e => e.start_date > windowEnd);
+
+                if (inWindow.length) {
+                    windows.push({ start: windowStart, end: windowEnd, events: inWindow });
+                }
+
+                if (!rest.length) break;
+                windowStart = rest[0].start_date;
+                remaining = rest;
+            }
+            return windows;
+        }
+
+        function renderTable(events, flatten) {
+            const tbody = document.getElementById('event-table-body');
+            const noEvents = document.getElementById('no-events');
+            const pagination = document.getElementById('pagination');
+
+            if (!events.length) {
+                tbody.innerHTML = '';
+                noEvents.style.display = 'block';
+                pagination.style.display = 'none';
                 return;
             }
-            
-            const grouped = groupEventsByDate(events);
+            noEvents.style.display = 'none';
+
+            if (flatten) {
+                const sorted = [...events].sort((a, b) => a.start_date < b.start_date ? -1 : 1);
+
+                const totalPages = Math.ceil(sorted.length / ROWS_PER_PAGE);
+                currentPage = Math.min(currentPage, totalPages - 1);
+                const pageRows = sorted.slice(currentPage * ROWS_PER_PAGE, (currentPage + 1) * ROWS_PER_PAGE);
+
+                tbody.innerHTML = pageRows.map(e => renderEventRow(e, true)).join('');
+                updatePaginationControls(currentPage, totalPages, null);
+                return;
+            }
+
+            // Default: date-grouped, paginated by rolling 7-day windows
+            const windows = paginateGrouped(events);
+            const totalPages = windows.length;
+            currentPage = Math.min(currentPage, totalPages - 1);
+            const window = windows[currentPage];
+
+            const grouped = groupByDate(window.events);
             const dates = Object.keys(grouped).sort();
-            
             let html = '';
             dates.forEach(date => {
-                const dateInfo = formatDate(date);
+                const d = formatDate(date);
                 const dayEvents = grouped[date];
-                
-                html += `
-                    <div class="day-section">
-                        <div class="day-header">
-                            <div class="day-date">${dateInfo.full}</div>
-                            <div class="day-count">${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}</div>
-                        </div>
-                        <div class="events-list">
-                `;
-                
-                dayEvents.forEach(event => {
-                    const doorsTime = formatTime(event.doors_time);
-                    const startTime = formatTime(event.start_time);
-                    const eventLink = event.ticket_url || event.event_url || event.venue_url || null;
-                    const eventName = eventLink
-                        ? `<a href="${eventLink}" target="_blank" style="color: inherit; text-decoration: none; border-bottom: 1px solid #999;">${event.name}</a>`
-                        : event.name;
-                    const priceDisplay = event.sold_out
-                        ? `<span style="color: #c62828; font-weight: 600;">Sold Out</span>`
-                        : event.price;
-
-                    html += `
-                        <div class="event-card">
-                            <div class="event-name">${eventName}</div>
-                            <div class="event-details">
-                                <div class="event-detail">
-                                    <span class="event-detail-icon">📍</span>
-                                    <span>${event.venue_url
-                                        ? `<a href="${event.venue_url}" target="_blank" style="color: inherit; text-decoration: none; border-bottom: 1px solid #666;">${event.venue}</a>`
-                                        : event.venue}${event.location ? ' · ' + event.location : ''}</span>
-                                </div>
-                                ${startTime ? `
-                                <div class="event-detail">
-                                    <span class="event-detail-icon">🕐</span>
-                                    <span>${doorsTime ? 'Doors: ' + doorsTime + ', ' : ''}Show: ${startTime}</span>
-                                </div>
-                                ` : ''}
-                                ${priceDisplay ? `
-                                <div class="event-detail">
-                                    <span class="event-detail-icon">💵</span>
-                                    <span>${priceDisplay}</span>
-                                </div>
-                                ` : ''}
-                            </div>
-                            ${event.genre ? `<span class="genre-tag">${event.genre}</span>` : ''}
-                        </div>
-                    `;
-                });
-                
-                html += `
-                        </div>
-                    </div>
-                `;
+                html += `<tr class="date-row"><td colspan="4">${d.full} · ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}</td></tr>`;
+                html += dayEvents.map(e => renderEventRow(e, false)).join('');
             });
-            
-            container.innerHTML = html;
+            tbody.innerHTML = html;
+
+            const windowLabel = formatWindowLabel(window.start, window.end);
+            updatePaginationControls(currentPage, totalPages, windowLabel);
         }
-        
-        function applyFilters() {
+
+        function formatWindowLabel(startStr, endStr) {
+            const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const [sy, sm, sd] = startStr.split('-').map(Number);
+            const [ey, em, ed] = endStr.split('-').map(Number);
+            return `${months[sm - 1]} ${sd} – ${months[em - 1]} ${ed}`;
+        }
+
+        function updatePaginationControls(page, totalPages, weekLabel) {
+            const pagination = document.getElementById('pagination');
+            const indicator = document.getElementById('page-indicator');
+
+            if (totalPages <= 1) {
+                pagination.style.display = 'none';
+                return;
+            }
+
+            pagination.style.display = 'flex';
+            indicator.textContent = weekLabel
+                ? `${weekLabel} · Page ${page + 1} of ${totalPages}`
+                : `Page ${page + 1} of ${totalPages}`;
+
+            document.getElementById('prev-page').disabled = page <= 0;
+            document.getElementById('next-page').disabled = page >= totalPages - 1;
+        }
+
+        function changePage(delta) {
+            currentPage += delta;
+            applyFilters(true);
+            document.getElementById('event-table-anchor').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function applyFilters(keepPage) {
             const venue = document.getElementById('venue-filter').value;
             const genre = document.getElementById('genre-filter').value;
+            const type = document.getElementById('type-filter').value;
             const startDate = document.getElementById('start-date').value;
             const endDate = document.getElementById('end-date').value;
-            
-            let filtered = allEvents;
-            
-            if (venue) {
-                filtered = filtered.filter(e => e.venue === venue);
-            }
-            if (genre) {
-                filtered = filtered.filter(e => e.genre === genre);
-            }
-            if (startDate) {
-                filtered = filtered.filter(e => e.start_date >= startDate);
-            }
-            if (endDate) {
-                filtered = filtered.filter(e => e.start_date <= endDate);
-            }
-            
-            renderCalendar(filterActiveEvents(filtered));
-        }
-        
-        function filterActiveEvents(events) {
-            const now = new Date();
-            const todayStr = now.toISOString().split('T')[0];
 
-            return events.filter(event => {
-                if (event.start_date > todayStr) return true;
-                if (event.start_date < todayStr) return false;
+            if (!keepPage) currentPage = 0;
 
-                // Today: keep until midnight regardless of start time
-                return true;
-            });
+            let filtered = filterActiveEvents(allEvents);
+
+            if (venue) filtered = filtered.filter(e => e.venue === venue);
+            if (genre) filtered = filtered.filter(e => e.genre === genre);
+            if (type) filtered = filtered.filter(e => (e.event_type || 'other') === type);
+            if (startDate) filtered = filtered.filter(e => e.start_date >= startDate);
+            if (endDate) filtered = filtered.filter(e => e.start_date <= endDate);
+
+            // Flatten (no date-grouping, row-count pagination) whenever a
+            // venue or type filter narrows the results.
+            const flatten = Boolean(venue || type);
+
+            renderTable(filtered, flatten);
         }
 
-        // Initial render - only current/future events
-        renderCalendar(filterActiveEvents(allEvents));
+        // ---------- Init ----------
+        renderHighlights();
+        renderTypeCards();
+        applyFilters();
     </script>
 </body>
 </html>

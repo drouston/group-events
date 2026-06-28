@@ -761,6 +761,11 @@
         </div>
     </div>
 
+    <div id="dup-group-banner" style="display:none; background:#2a2a1a; border:1px solid #666; border-radius:6px; padding:8px 14px; margin-bottom:8px; font-size:13px; color:#ccc; display:none; align-items:center; gap:12px;">
+        <span>⚠️ Showing duplicate group</span>
+        <button onclick="clearDupGroupFilter()" style="background:#444; border:1px solid #666; color:#ccc; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:12px;">✕ Clear</button>
+    </div>
+
     <div id="events-container">
         <div class="loading">Loading events...</div>
     </div>
@@ -799,6 +804,9 @@
         // Pagination state
         let pageSize = 20;         // number, or 'all'
         let currentPage = 1;
+
+        // Duplicate group filter — set of IDs to show when drilling into a dup group
+        let dupGroupFilter = null;
 
         // Column definitions drive the header, filter row, colgroup, and sorting.
         // type: checkbox | text | select | selectyn | actions
@@ -908,6 +916,7 @@
         }
 
         function matchesColumnFilters(event) {
+            if (dupGroupFilter && !dupGroupFilter.has(event.id)) return false;
             for (const col of COLUMNS) {
                 if (!col.key) continue;
                 const fv = columnFilters[col.key];
@@ -1117,7 +1126,7 @@
                 ? esc(event.duplicate_of.name + ' — ' + event.duplicate_of.date + ' — ' + event.duplicate_of.venue + ' (#' + event.duplicate_of_id + ')')
                 : 'Possible duplicate — click to filter';
             const dupCell = event.status === 'possible_duplicate'
-                ? `<span class="dup-flag" title="${dupTitle}" onclick="filterDuplicates(event)">⚠️ Yes</span>`
+                ? `<span class="dup-flag" title="${dupTitle}" onclick="filterDuplicates(event, ${event.id})">⚠️ Yes</span>`
                 : '<span class="url-no">—</span>';
 
             const urlCell = event.ticket_url
@@ -1347,13 +1356,42 @@
             setTimeout(() => { isResizing = false; }, 0);
         }
 
-        // Clicking the duplicate pill filters the table to duplicates only
-        function filterDuplicates(e) {
+        // Clicking the duplicate pill filters to that event's group (original + all its duplicates)
+        async function filterDuplicates(e, eventId) {
             e.stopPropagation();
-            const ctrl = document.querySelector('[data-filter="dup"]');
-            if (ctrl) ctrl.value = 'yes';
-            columnFilters.dup = 'yes';
+
+            const response = await fetch('/api/filter_events', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ status: 'all', sort_by: 'date', sort_order: 'asc' })
+            });
+            const data = await response.json();
+            filteredEvents = data.events;
+
+            const clicked = filteredEvents.find(ev => ev.id === eventId);
+            const rootId = (clicked && clicked.duplicate_of_id) || eventId;
+
+            dupGroupFilter = new Set(
+                filteredEvents
+                    .filter(ev => ev.id === rootId || ev.duplicate_of_id === rootId)
+                    .map(ev => ev.id)
+            );
+
+            columnFilters = {};
+            sortState = null;
             currentPage = 1;
+            focusedRowIndex = 0;
+
+            const banner = document.getElementById('dup-group-banner');
+            if (banner) banner.style.display = 'flex';
+
+            renderTable();
+        }
+
+        function clearDupGroupFilter() {
+            dupGroupFilter = null;
+            const banner = document.getElementById('dup-group-banner');
+            if (banner) banner.style.display = 'none';
             renderBody();
         }
 
@@ -1376,6 +1414,10 @@
             document.getElementById('filter-special').value = '';
             document.getElementById('sort-by').value = 'date';
             document.getElementById('sort-order').value = 'asc';
+
+            dupGroupFilter = null;
+            const banner = document.getElementById('dup-group-banner');
+            if (banner) banner.style.display = 'none';
 
             applyFilters();
         }
