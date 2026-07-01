@@ -705,6 +705,7 @@ def reject_event():
 def update_event():
     event_data = request.json
     do_update_event(event_data)
+    return jsonify({'status': 'success'})
 
 @app.route('/api/filter_events', methods=['POST'])
 def filter_events():

@@ -1452,10 +1452,15 @@
             const button = e.target.closest('button');
             if (!button) return;
 
-            const row = button.closest('.event-row');
-            if (!row) return;
-
             const action = button.dataset.action;
+
+            // Save button lives in detail-row, not event-row — walk back to the main row
+            let row = button.closest('.event-row');
+            if (!row && action === 'save') {
+                const detailRow = button.closest('.detail-row');
+                if (detailRow) row = detailRow.previousElementSibling;
+            }
+            if (!row) return;
 
             if (action === 'approve') {
                 approveEvent(row);
