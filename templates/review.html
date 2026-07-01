@@ -1134,7 +1134,8 @@
                 ? `<span class="url-yes"><a href="${esc(event.ticket_url)}" target="_blank" rel="noopener">Yes 🔗</a></span>`
                 : '<span class="url-no">No</span>';
 
-            const pillActions = event.status === 'pending'
+            const needsReview = event.status === 'pending' || event.status === 'possible_duplicate';
+            const pillActions = needsReview
                 ? `<span class="pill-actions">
                         <button class="approve" data-action="approve" title="Approve">✓</button>
                         <button class="reject" data-action="reject" title="Reject">✗</button>
@@ -1163,9 +1164,9 @@
                     <td>${urlCell}</td>
                     <td class="no-clip">
                         <div class="row-actions">
-                            ${event.status === 'pending' ? `<button class="approve" data-action="approve">✓</button>` : ''}
+                            ${needsReview ? `<button class="approve" data-action="approve">✓</button>` : ''}
                             <button class="edit" data-action="edit">✎</button>
-                            ${event.status === 'pending'
+                            ${needsReview
                                 ? `<button class="reject" data-action="reject">✗</button>`
                                 : `<button class="delete" data-action="delete">🗑</button>`}
                         </div>
