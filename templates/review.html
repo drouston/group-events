@@ -761,7 +761,7 @@
         </div>
     </div>
 
-    <div id="dup-group-banner" style="display:none; background:#2a2a1a; border:1px solid #666; border-radius:6px; padding:8px 14px; margin-bottom:8px; font-size:13px; color:#ccc; display:none; align-items:center; gap:12px;">
+    <div id="dup-group-banner" style="display:none; background:#2a2a1a; border:1px solid #666; border-radius:6px; padding:8px 14px; margin-bottom:8px; font-size:13px; color:#ccc; align-items:center; gap:12px;">
         <span>⚠️ Showing duplicate group</span>
         <button onclick="clearDupGroupFilter()" style="background:#444; border:1px solid #666; color:#ccc; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:12px;">✕ Clear</button>
     </div>
@@ -807,6 +807,7 @@
 
         // Duplicate group filter — set of IDs to show when drilling into a dup group
         let dupGroupFilter = null;
+        let dupGroupPreviousEvents = null; // filteredEvents snapshot before drill-in
 
         // Column definitions drive the header, filter row, colgroup, and sorting.
         // type: checkbox | text | select | selectyn | actions
@@ -1360,10 +1361,12 @@
         async function filterDuplicates(e, eventId) {
             e.stopPropagation();
 
+            dupGroupPreviousEvents = filteredEvents;
+
             const response = await fetch('/api/filter_events', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ status: 'all', sort_by: 'date', sort_order: 'asc' })
+                body: JSON.stringify({ status: 'all', sort_by: 'start_date', sort_order: 'asc' })
             });
             const data = await response.json();
             filteredEvents = data.events;
@@ -1390,9 +1393,13 @@
 
         function clearDupGroupFilter() {
             dupGroupFilter = null;
+            if (dupGroupPreviousEvents !== null) {
+                filteredEvents = dupGroupPreviousEvents;
+                dupGroupPreviousEvents = null;
+            }
             const banner = document.getElementById('dup-group-banner');
             if (banner) banner.style.display = 'none';
-            renderBody();
+            renderTable();
         }
 
         function updateStats(events) {
@@ -1416,6 +1423,7 @@
             document.getElementById('sort-order').value = 'asc';
 
             dupGroupFilter = null;
+            dupGroupPreviousEvents = null;
             const banner = document.getElementById('dup-group-banner');
             if (banner) banner.style.display = 'none';
 
