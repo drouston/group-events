@@ -723,8 +723,12 @@ def filter_events():
     params = []
     
     if filters.get('status') and filters['status'] != 'all':
-        query += f' AND status = {ph}'
-        params.append(filters['status'])
+        if filters['status'] == 'pending':
+            query += f' AND status IN ({ph}, {ph})'
+            params.extend(['pending', 'possible_duplicate'])
+        else:
+            query += f' AND status = {ph}'
+            params.append(filters['status'])
     
     if filters.get('venue') and filters['venue'] != 'all':
         query += f' AND venue = {ph}'
