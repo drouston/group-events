@@ -648,8 +648,8 @@
                     <option value="all">All Events</option>
                     <option value="pending" selected>Pending Review</option>
                     <option value="approved">Approved</option>
-                    <option value="possible_duplicate">Possible Duplicates</option>
                     <option value="canceled">Canceled</option>
+                    <option value="rejected">Rejected</option>
                     <option value="date_changed">Date Changed</option>
                 </select>
             </div>
@@ -828,8 +828,8 @@
         const STATUS_LABELS = {
             pending: 'Pending Review',
             approved: 'Approved',
-            possible_duplicate: 'Possible Duplicate',
-            canceled: 'Canceled'
+            canceled: 'Canceled',
+            rejected: 'Rejected'
         };
 
         function esc(s) {
@@ -1107,8 +1107,8 @@
 
         function rowHtml(event, idx, pos) {
             const statusBadge = event.status === 'approved' ? 'status-approved' :
-                                event.status === 'possible_duplicate' ? 'status-duplicate' :
-                                event.status === 'canceled' ? 'status-canceled' : 'status-pending';
+                                event.status === 'canceled' ? 'status-canceled' :
+                                event.status === 'rejected' ? 'status-canceled' : 'status-pending';
             const statusText = STATUS_LABELS[event.status] || 'Pending Review';
 
             const rowClasses = [
