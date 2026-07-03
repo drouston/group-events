@@ -3,7 +3,10 @@ import json
 import sqlite3
 import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
+
+CENTRAL = ZoneInfo('America/Chicago')
 
 app = Flask(__name__)
 
@@ -476,7 +479,7 @@ def stats():
 def calendar():
     conn = get_db_connection()
     c = conn.cursor()
-    today_date = datetime.now().date()
+    today_date = datetime.now(CENTRAL).date()
     today = today_date.isoformat()
     ph = '%s' if DATABASE_URL else '?'
     vis = 'true' if DATABASE_URL else '1'
@@ -876,7 +879,7 @@ def get_genres():
 def calendar():
     conn = get_db_connection()
     c = conn.cursor()
-    today_date = datetime.now().date()
+    today_date = datetime.now(CENTRAL).date()
     today = today_date.isoformat()
     ph = '%s' if DATABASE_URL else '?'
     vis = 'true' if DATABASE_URL else '1'
