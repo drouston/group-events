@@ -558,7 +558,7 @@ def calendar():
     this_week = [
         e for e in events
         if week_start <= e['start_date'] <= week_end
-    ][:10]
+    ][:20]
 
     # --- This weekend: Thu-Sun, all non-private event types ---
     days_since_thursday = (weekday - 3) % 7
