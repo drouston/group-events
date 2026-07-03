@@ -1166,9 +1166,7 @@
                         <div class="row-actions">
                             ${needsReview ? `<button class="approve" data-action="approve">✓</button>` : ''}
                             <button class="edit" data-action="edit">✎</button>
-                            ${needsReview
-                                ? `<button class="reject" data-action="reject">✗</button>`
-                                : `<button class="delete" data-action="delete">🗑</button>`}
+                            <button class="reject" data-action="reject">✗</button>
                         </div>
                     </td>
                 </tr>`;
@@ -1465,10 +1463,6 @@
                 approveEvent(row);
             } else if (action === 'reject') {
                 rejectEvent(row);
-            } else if (action === 'delete') {
-                if (confirm('Are you sure you want to delete this event?')) {
-                    deleteEvent(row);
-                }
             } else if (action === 'edit') {
                 toggleEditMode(row);
             } else if (action === 'save') {
