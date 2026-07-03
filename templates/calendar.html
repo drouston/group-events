@@ -331,7 +331,7 @@
         <div class="highlights-section">
             <div class="highlights-grid">
                 <div class="highlight-card">
-                    <div class="highlight-card-title">This Week</div>
+                    <div class="highlight-card-title">{{ week_label }}</div>
                     <div id="this-week-list"></div>
                 </div>
                 <div class="highlight-card">
@@ -496,7 +496,7 @@
 
         function renderHighlights() {
             renderHighlightList('this-week-list', {{ this_week | tojson }}, true);
-            renderHighlightList('this-weekend-list', {{ this_weekend | tojson }}, false);
+            renderHighlightList('this-weekend-list', {{ this_weekend | tojson }}, true);
         }
 
         // ---------- Type cards ----------

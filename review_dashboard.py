@@ -535,28 +535,32 @@ def calendar():
         for key, label in card_types
     ]
 
-    # --- This week: Mon-Wed, ALL event types, up to 10 ---
-    # Find the bounds of the current Mon-Wed window.
+    # --- This week / Next week card ---
     # Mon=0 ... Sun=6.
     weekday = today_date.weekday()
-    days_since_monday = weekday  # Monday=0 so this is direct
+    days_since_monday = weekday
     this_monday = today_date - timedelta(days=days_since_monday)
     this_wednesday = this_monday + timedelta(days=2)
 
-    if today_date > this_wednesday:
-        # already past Wed (Thu/Fri/Sat/Sun) -> roll to next week's Mon-Wed
-        this_monday += timedelta(days=7)
-        this_wednesday += timedelta(days=7)
+    if today_date <= this_wednesday:
+        # Mon–Wed: show the remaining Mon–Wed window of this week
+        week_label = 'This Week'
+        week_start = this_monday.isoformat()
+        week_end = this_wednesday.isoformat()
+    else:
+        # Thu–Sun: show the full upcoming Mon–Sun (7 days)
+        week_label = 'Next Week'
+        next_monday = this_monday + timedelta(days=7)
+        next_sunday = next_monday + timedelta(days=6)
+        week_start = next_monday.isoformat()
+        week_end = next_sunday.isoformat()
 
-    week_start = this_monday.isoformat()
-    week_end = this_wednesday.isoformat()
     this_week = [
         e for e in events
         if week_start <= e['start_date'] <= week_end
     ][:10]
 
-    # --- This weekend: Thu-Sun, music only, full list (no cap) ---
-    # Find the current/upcoming Thu-Sun window, sticky through Sun EOD.
+    # --- This weekend: Thu-Sun, all non-private event types ---
     days_since_thursday = (weekday - 3) % 7
     this_thursday = today_date - timedelta(days=days_since_thursday)
     this_sunday = this_thursday + timedelta(days=3)
@@ -567,9 +571,10 @@ def calendar():
 
     weekend_start = this_thursday.isoformat()
     weekend_end = this_sunday.isoformat()
+    weekend_types = {'music', 'comedy', 'performing_arts', 'festival', 'sports'}
     this_weekend = [
         e for e in events
-        if e['event_type'] == 'music' and weekend_start <= e['start_date'] <= weekend_end
+        if e['event_type'] in weekend_types and weekend_start <= e['start_date'] <= weekend_end
     ]
 
     return render_template(
@@ -578,6 +583,7 @@ def calendar():
         venues=venues,
         genres=genres,
         type_summary=type_summary,
+        week_label=week_label,
         this_week=this_week,
         this_weekend=this_weekend,
     )
