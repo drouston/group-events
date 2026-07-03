@@ -665,32 +665,42 @@ def do_reject_event(event_data):
 def do_update_event(event_data):
     conn = get_db_connection()
     c = conn.cursor()
+
+    # Form selects send "true"/"false" strings; coerce to real booleans
+    def to_bool(val, default=False):
+        if isinstance(val, bool): return val
+        if isinstance(val, str): return val.lower() not in ('false', '0', '')
+        return default
+
+    # Empty strings from cleared inputs should be stored as NULL
+    def str_or_none(key):
+        v = event_data.get(key)
+        return v if v else None
+
+    visible = to_bool(event_data.get('visible'), default=True)
+    multi_day = to_bool(event_data.get('multi_day'), default=False)
+
+    args = (
+        event_data['name'], str_or_none('start_date'), str_or_none('end_date'),
+        str_or_none('doors_time'), str_or_none('start_time'), str_or_none('end_time'),
+        multi_day, event_data['venue'], str_or_none('location'),
+        str_or_none('price'), str_or_none('genre'),
+        event_data.get('notes', ''), event_data.get('event_type', 'music'),
+        visible, event_data['id']
+    )
+
     if DATABASE_URL:
         c.execute('''UPDATE events SET name=%s, start_date=%s, end_date=%s, doors_time=%s,
                      start_time=%s, end_time=%s, multi_day=%s,
                      venue=%s, location=%s, price=%s, genre=%s, notes=%s,
                      event_type=%s, visible=%s
-                     WHERE id=%s''',
-                  (event_data['name'], event_data.get('start_date'), event_data.get('end_date'),
-                   event_data.get('doors_time'), event_data.get('start_time'),
-                   event_data.get('end_time'), event_data.get('multi_day', False),
-                   event_data['venue'], event_data.get('location'),
-                   event_data.get('price'), event_data.get('genre'),
-                   event_data.get('notes', ''), event_data.get('event_type', 'music'),
-                   event_data.get('visible', True), event_data['id']))
+                     WHERE id=%s''', args)
     else:
         c.execute('''UPDATE events SET name=?, start_date=?, end_date=?, doors_time=?,
                      start_time=?, end_time=?, multi_day=?,
                      venue=?, location=?, price=?, genre=?, notes=?,
                      event_type=?, visible=?
-                     WHERE id=?''',
-                  (event_data['name'], event_data.get('start_date'), event_data.get('end_date'),
-                   event_data.get('doors_time'), event_data.get('start_time'),
-                   event_data.get('end_time'), event_data.get('multi_day', False),
-                   event_data['venue'], event_data.get('location'),
-                   event_data.get('price'), event_data.get('genre'),
-                   event_data.get('notes', ''), event_data.get('event_type', 'music'),
-                   event_data.get('visible', True), event_data['id']))
+                     WHERE id=?''', args)
     conn.commit()
     conn.close()
 
@@ -710,8 +720,12 @@ def reject_event():
 @app.route('/update', methods=['POST'])
 def update_event():
     event_data = request.json
-    do_update_event(event_data)
-    return jsonify({'status': 'success'})
+    try:
+        do_update_event(event_data)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        import traceback
+        return jsonify({'status': 'error', 'message': str(e), 'trace': traceback.format_exc()}), 500
 
 @app.route('/api/filter_events', methods=['POST'])
 def filter_events():
