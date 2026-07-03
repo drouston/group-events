@@ -689,20 +689,23 @@ def do_update_event(event_data):
         multi_day, event_data['venue'], str_or_none('location'),
         str_or_none('price'), str_or_none('genre'),
         event_data.get('notes', ''), event_data.get('event_type', 'music'),
-        visible, event_data['id']
+        visible, str_or_none('event_url'), str_or_none('ticket_url'), str_or_none('venue_url'),
+        event_data['id']
     )
 
     if DATABASE_URL:
         c.execute('''UPDATE events SET name=%s, start_date=%s, end_date=%s, doors_time=%s,
                      start_time=%s, end_time=%s, multi_day=%s,
                      venue=%s, location=%s, price=%s, genre=%s, notes=%s,
-                     event_type=%s, visible=%s
+                     event_type=%s, visible=%s,
+                     event_url=%s, ticket_url=%s, venue_url=%s
                      WHERE id=%s''', args)
     else:
         c.execute('''UPDATE events SET name=?, start_date=?, end_date=?, doors_time=?,
                      start_time=?, end_time=?, multi_day=?,
                      venue=?, location=?, price=?, genre=?, notes=?,
-                     event_type=?, visible=?
+                     event_type=?, visible=?,
+                     event_url=?, ticket_url=?, venue_url=?
                      WHERE id=?''', args)
     conn.commit()
     conn.close()
