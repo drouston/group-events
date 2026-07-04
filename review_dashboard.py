@@ -1001,7 +1001,7 @@ def _venue_health_inner():
     if DATABASE_URL:
         c.execute('''
             SELECT venue,
-                COUNT(*) FILTER (WHERE status = 'approved' AND start_date >= CURRENT_DATE) AS upcoming,
+                COUNT(*) FILTER (WHERE status = 'approved' AND start_date::date >= CURRENT_DATE) AS upcoming,
                 COUNT(*) FILTER (WHERE status IN ('pending','possible_duplicate')) AS pending,
                 COUNT(*) FILTER (WHERE status = 'canceled'
                     AND created_at IS NOT NULL AND created_at != ''
