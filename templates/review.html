@@ -1135,6 +1135,7 @@
                 : '<span class="url-no">No</span>';
 
             const needsReview = event.status === 'pending' || event.status === 'possible_duplicate';
+            const canApprove = needsReview || event.status === 'canceled';
             const pillActions = needsReview
                 ? `<span class="pill-actions">
                         <button class="approve" data-action="approve" title="Approve">✓</button>
@@ -1164,7 +1165,7 @@
                     <td>${urlCell}</td>
                     <td class="no-clip">
                         <div class="row-actions">
-                            ${needsReview ? `<button class="approve" data-action="approve">✓</button>` : ''}
+                            ${canApprove ? `<button class="approve" data-action="approve">✓</button>` : ''}
                             <button class="edit" data-action="edit">✎</button>
                             <button class="reject" data-action="reject">✗</button>
                         </div>

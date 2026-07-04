@@ -152,7 +152,7 @@ VENUES = {
     },
     "improv_tx": {
         "name": "Improv Houston",
-        "url": "https://improvtx.com/calendar/-/",
+        "url": "https://improvtx.com/calendar/houston/-/",
         "venue_url": "https://improvtx.com/houston/calendar/",
         "city": "Houston",
         "state": "TX",
@@ -274,7 +274,8 @@ def update_stored_hash(venue_key, content_hash):
     conn.close()
 
 def check_canceled_events(venue_key, scraped_events):
-    """Compare scraped events against DB future events, flag missing as canceled"""
+    """Compare scraped events against DB future events, flag missing as canceled.
+    Uses fuzzy name matching to avoid false positives from minor title drift."""
     conn = get_db_connection()
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
@@ -285,13 +286,32 @@ def check_canceled_events(venue_key, scraped_events):
                  AND status IN ('approved', 'pending')''',
               (venue_name, today))
     db_events = c.fetchall()
-    scraped_set = set(
-        (e['name'].strip().lower(), e.get('start_date'))
-        for e in scraped_events
-    )
+
+    # Build scraped names grouped by date for efficient same-day comparison
+    scraped_by_date = {}
+    for e in scraped_events:
+        date = e.get('start_date')
+        if date:
+            scraped_by_date.setdefault(date, []).append(e['name'].strip().lower())
+
+    FUZZY_THRESHOLD = 0.85
+
+    def fuzzy_match(db_name, scraped_names):
+        db_lower = db_name.strip().lower()
+        for s in scraped_names:
+            if db_lower == s:
+                return True
+            # Handle suffix additions like "(Sold Out)", "(New Date)"
+            if db_lower in s or s in db_lower:
+                return True
+            if SequenceMatcher(None, db_lower, s).ratio() >= FUZZY_THRESHOLD:
+                return True
+        return False
+
     canceled_count = 0
     for db_id, db_name, db_date in db_events:
-        if (db_name.strip().lower(), db_date) not in scraped_set:
+        same_day = scraped_by_date.get(db_date, [])
+        if not fuzzy_match(db_name, same_day):
             c.execute(f'''UPDATE events SET status = 'canceled'
                          WHERE id = {ph}''', (db_id,))
             canceled_count += 1
@@ -1204,6 +1224,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             WHERE name = {ph} AND start_date = {ph}
                             AND venue = {ph}
                             AND (start_time = {ph} OR (start_time IS NULL AND {ph} IS NULL))
+                            AND status != 'canceled'
                             LIMIT 1''',
                         (event['name'], event.get('start_date'), event['venue'],
                         event.get('start_time'), event.get('start_time')))
@@ -1214,7 +1235,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
             # Near-match check: same name + start_date + venue, different start_time (ICS time update)
             # Single result means it's the same event with an updated time — update in place
             c.execute(f'''SELECT id, start_time FROM events
-                            WHERE name = {ph} AND start_date = {ph} AND venue = {ph}''',
+                            WHERE name = {ph} AND start_date = {ph} AND venue = {ph}
+                            AND status != 'canceled' ''',
                         (event['name'], event.get('start_date'), event['venue']))
             near = c.fetchall()
             if len(near) == 1:
