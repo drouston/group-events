@@ -979,6 +979,137 @@ def calendar():
         this_weekend=this_weekend,
     )
 
+try:
+    from universal_scraper import VENUES as _SCRAPER_VENUES
+    VENUE_KEY_TO_NAME = {k: v['name'] for k, v in _SCRAPER_VENUES.items()}
+except Exception:
+    VENUE_KEY_TO_NAME = {}
+
+@app.route('/venue_health')
+def venue_health():
+    conn = get_db_connection()
+    c = conn.cursor()
+    today = datetime.now(CENTRAL).date().isoformat()
+
+    if DATABASE_URL:
+        c.execute('''
+            SELECT venue,
+                COUNT(*) FILTER (WHERE status = 'approved' AND start_date >= CURRENT_DATE) AS upcoming,
+                COUNT(*) FILTER (WHERE status IN ('pending','possible_duplicate')) AS pending,
+                COUNT(*) FILTER (WHERE status = 'canceled'
+                    AND created_at >= NOW() - INTERVAL '30 days') AS canceled_30d,
+                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'
+                    AND status NOT IN ('rejected')) AS new_7d,
+                COUNT(*) FILTER (WHERE status = 'canceled') AS total_canceled
+            FROM events
+            WHERE venue IS NOT NULL
+            GROUP BY venue
+            ORDER BY upcoming DESC
+        ''')
+        venue_rows = c.fetchall()
+
+        c.execute('''
+            SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
+            FROM events
+            WHERE created_at IS NOT NULL AND created_at >= NOW() - INTERVAL '8 weeks'
+            GROUP BY week ORDER BY week
+        ''')
+        weekly_new_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+
+        c.execute('''
+            SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
+            FROM events
+            WHERE status = 'canceled' AND created_at IS NOT NULL
+            AND created_at >= NOW() - INTERVAL '8 weeks'
+            GROUP BY week ORDER BY week
+        ''')
+        weekly_cancel_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+
+        c.execute('SELECT venue_key, last_scraped FROM venue_cache')
+        cache_rows = c.fetchall()
+    else:
+        c.execute('''
+            SELECT venue,
+                SUM(CASE WHEN status='approved' AND start_date >= ? THEN 1 ELSE 0 END) AS upcoming,
+                SUM(CASE WHEN status IN ('pending','possible_duplicate') THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='canceled' AND created_at >= date('now','-30 days') THEN 1 ELSE 0 END) AS canceled_30d,
+                SUM(CASE WHEN created_at >= date('now','-7 days') AND status != 'rejected' THEN 1 ELSE 0 END) AS new_7d,
+                SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS total_canceled
+            FROM events WHERE venue IS NOT NULL
+            GROUP BY venue ORDER BY upcoming DESC
+        ''', (today,))
+        venue_rows = c.fetchall()
+
+        c.execute('''
+            SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
+            FROM events WHERE created_at IS NOT NULL AND created_at >= date('now','-56 days')
+            GROUP BY week ORDER BY week
+        ''')
+        weekly_new_rows = c.fetchall()
+
+        c.execute('''
+            SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
+            FROM events WHERE status='canceled' AND created_at IS NOT NULL
+            AND created_at >= date('now','-56 days')
+            GROUP BY week ORDER BY week
+        ''')
+        weekly_cancel_rows = c.fetchall()
+
+        c.execute('SELECT venue_key, last_scraped FROM venue_cache')
+        cache_rows = c.fetchall()
+
+    conn.close()
+
+    key_to_scraped = {r[0]: r[1] for r in cache_rows}
+    name_to_key = {v: k for k, v in VENUE_KEY_TO_NAME.items()}
+    now_dt = datetime.now(CENTRAL)
+
+    venues = []
+    cols = ['venue','upcoming','pending','canceled_30d','new_7d','total_canceled']
+    for row in venue_rows:
+        d = dict(zip(cols, row))
+        key = name_to_key.get(d['venue'])
+        last_scraped_raw = key_to_scraped.get(key) if key else None
+
+        days_since = None
+        last_scraped_label = 'Never'
+        if last_scraped_raw:
+            try:
+                ls = datetime.fromisoformat(last_scraped_raw)
+                if ls.tzinfo is None:
+                    ls = ls.replace(tzinfo=CENTRAL)
+                days_since = (now_dt - ls).days
+                last_scraped_label = f'{days_since}d ago' if days_since > 0 else 'Today'
+            except Exception:
+                pass
+
+        if d['canceled_30d'] >= 5 or (d['upcoming'] == 0 and (days_since is None or days_since > 3)):
+            health = 'red'
+        elif d['canceled_30d'] >= 2 or d['pending'] >= 10 or (days_since is not None and days_since > 2):
+            health = 'yellow'
+        else:
+            health = 'green'
+
+        d['health'] = health
+        d['last_scraped_label'] = last_scraped_label
+        d['days_since'] = days_since
+        venues.append(d)
+
+    totals = {
+        'upcoming': sum(v['upcoming'] for v in venues),
+        'pending': sum(v['pending'] for v in venues),
+        'new_7d': sum(v['new_7d'] for v in venues),
+        'canceled_30d': sum(v['canceled_30d'] for v in venues),
+    }
+
+    return render_template('venue_health.html',
+        venues=venues,
+        weekly_new=weekly_new_rows,
+        weekly_canceled=weekly_cancel_rows,
+        totals=totals,
+    )
+
+
 if __name__ == '__main__':
     init_db()
     port = int(os.environ.get('PORT', 5000))

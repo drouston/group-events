@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Venue Health</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 { margin: 0; font-size: 22px; }
+
+        .back-btn {
+            padding: 8px 16px;
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #333;
+            font-size: 14px;
+        }
+        .back-btn:hover { background: #e0e0e0; }
+
+        /* Summary cards */
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .card-label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+
+        .card-value {
+            font-size: 32px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .card.accent-green .card-value { color: #388e3c; }
+        .card.accent-orange .card-value { color: #e65100; }
+        .card.accent-blue .card-value { color: #1565c0; }
+        .card.accent-red .card-value { color: #c62828; }
+
+        /* Charts */
+        .charts-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .chart-panel {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .chart-panel h3 {
+            margin: 0 0 16px 0;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #555;
+        }
+
+        .chart-panel canvas { display: block; }
+
+        /* Table */
+        .table-panel {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow-x: auto;
+        }
+
+        .table-panel h3 {
+            margin: 0;
+            padding: 16px 20px;
+            font-size: 13px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #555;
+            border-bottom: 1px solid #eee;
+        }
+
+        table.health-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        table.health-table th {
+            padding: 10px 16px;
+            text-align: left;
+            background: #f0f0f0;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: #666;
+            font-weight: 700;
+            border-bottom: 2px solid #e0e0e0;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        table.health-table th:hover { background: #e8e8e8; }
+
+        .sort-arrow { color: #2196F3; margin-left: 4px; font-size: 10px; }
+
+        table.health-table td {
+            padding: 10px 16px;
+            border-top: 1px solid #eee;
+            color: #333;
+            white-space: nowrap;
+        }
+
+        table.health-table tr:hover td { background: #f7f7f7; }
+
+        .health-badge {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .health-badge.green { background: #4caf50; }
+        .health-badge.yellow { background: #ffc107; }
+        .health-badge.red { background: #f44336; }
+
+        .badge-cell {
+            display: flex;
+            align-items: center;
+        }
+
+        .num-col { text-align: right; }
+
+        @media (max-width: 900px) {
+            .summary-cards { grid-template-columns: repeat(2, 1fr); }
+            .charts-row { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>Venue Health</h1>
+    <a href="/" class="back-btn">&#8592; Review Dashboard</a>
+</div>
+
+<!-- Summary Cards -->
+<div class="summary-cards">
+    <div class="card accent-green">
+        <div class="card-label">Upcoming (Approved)</div>
+        <div class="card-value">{{ totals.upcoming }}</div>
+    </div>
+    <div class="card accent-blue">
+        <div class="card-label">Pending Review</div>
+        <div class="card-value">{{ totals.pending }}</div>
+    </div>
+    <div class="card accent-orange">
+        <div class="card-label">New This Week</div>
+        <div class="card-value">{{ totals.new_7d }}</div>
+    </div>
+    <div class="card accent-red">
+        <div class="card-label">Canceled (30d)</div>
+        <div class="card-value">{{ totals.canceled_30d }}</div>
+    </div>
+</div>
+
+<!-- Charts -->
+<div class="charts-row">
+    <div class="chart-panel">
+        <h3>Upcoming Events by Venue</h3>
+        <canvas id="venueChart" height="300"></canvas>
+    </div>
+    <div class="chart-panel">
+        <h3>New Events per Week</h3>
+        <canvas id="newWeekChart" height="300"></canvas>
+    </div>
+    <div class="chart-panel">
+        <h3>Cancellations per Week</h3>
+        <canvas id="cancelWeekChart" height="300"></canvas>
+    </div>
+</div>
+
+<!-- Table -->
+<div class="table-panel">
+    <h3>All Venues</h3>
+    <table class="health-table" id="healthTable">
+        <thead>
+            <tr>
+                <th data-col="health" data-dir="asc">Health <span class="sort-arrow">&#9650;</span></th>
+                <th data-col="venue" data-dir="asc">Venue</th>
+                <th data-col="upcoming" class="num-col" data-dir="desc">Upcoming</th>
+                <th data-col="pending" class="num-col" data-dir="desc">Pending</th>
+                <th data-col="new_7d" class="num-col" data-dir="desc">New (7d)</th>
+                <th data-col="canceled_30d" class="num-col" data-dir="desc">Canceled (30d)</th>
+                <th data-col="days_since" data-dir="asc">Last Scraped</th>
+            </tr>
+        </thead>
+        <tbody id="healthBody">
+            {% for v in venues %}
+            <tr data-health="{{ v.health }}"
+                data-venue="{{ v.venue }}"
+                data-upcoming="{{ v.upcoming }}"
+                data-pending="{{ v.pending }}"
+                data-new_7d="{{ v.new_7d }}"
+                data-canceled_30d="{{ v.canceled_30d }}"
+                data-days_since="{{ v.days_since if v.days_since is not none else 9999 }}">
+                <td>
+                    <div class="badge-cell">
+                        <span class="health-badge {{ v.health }}"></span>
+                        {{ v.health | capitalize }}
+                    </div>
+                </td>
+                <td>{{ v.venue }}</td>
+                <td class="num-col">{{ v.upcoming }}</td>
+                <td class="num-col">{{ v.pending }}</td>
+                <td class="num-col">{{ v.new_7d }}</td>
+                <td class="num-col">{{ v.canceled_30d }}</td>
+                <td>{{ v.last_scraped_label }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<script>
+    // ── Venue bar chart (horizontal) ──────────────────────────────────────────
+    const venueData = {
+        labels: {{ venues | map(attribute='venue') | list | tojson }},
+        values: {{ venues | map(attribute='upcoming') | list | tojson }},
+        health: {{ venues | map(attribute='health') | list | tojson }},
+    };
+
+    const venueColors = venueData.health.map(h =>
+        h === 'red' ? '#ef9a9a' : h === 'yellow' ? '#ffe082' : '#a5d6a7'
+    );
+
+    new Chart(document.getElementById('venueChart'), {
+        type: 'bar',
+        data: {
+            labels: venueData.labels,
+            datasets: [{
+                label: 'Upcoming',
+                data: venueData.values,
+                backgroundColor: venueColors,
+                borderColor: venueColors.map(c => c.replace('a7','50').replace('82','40').replace('9a','50')),
+                borderWidth: 1,
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { beginAtZero: true, ticks: { stepSize: 1 } },
+                y: { ticks: { font: { size: 11 } } }
+            }
+        }
+    });
+
+    // ── Weekly new events chart ───────────────────────────────────────────────
+    const weeklyNew = {{ weekly_new | tojson }};
+    new Chart(document.getElementById('newWeekChart'), {
+        type: 'bar',
+        data: {
+            labels: weeklyNew.map(r => r[0]),
+            datasets: [{
+                label: 'New Events',
+                data: weeklyNew.map(r => r[1]),
+                backgroundColor: '#90caf9',
+                borderColor: '#42a5f5',
+                borderWidth: 1,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+                y: { beginAtZero: true, ticks: { stepSize: 1 } }
+            }
+        }
+    });
+
+    // ── Weekly cancellations chart ────────────────────────────────────────────
+    const weeklyCanceled = {{ weekly_canceled | tojson }};
+    new Chart(document.getElementById('cancelWeekChart'), {
+        type: 'bar',
+        data: {
+            labels: weeklyCanceled.map(r => r[0]),
+            datasets: [{
+                label: 'Cancellations',
+                data: weeklyCanceled.map(r => r[1]),
+                backgroundColor: '#ef9a9a',
+                borderColor: '#ef5350',
+                borderWidth: 1,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { font: { size: 10 }, maxRotation: 45 } },
+                y: { beginAtZero: true, ticks: { stepSize: 1 } }
+            }
+        }
+    });
+
+    // ── Sortable table ────────────────────────────────────────────────────────
+    const HEALTH_ORDER = { green: 0, yellow: 1, red: 2 };
+    let sortCol = 'health';
+    let sortDir = 1; // 1 = asc, -1 = desc
+
+    document.querySelectorAll('#healthTable thead th').forEach(th => {
+        th.addEventListener('click', () => {
+            const col = th.dataset.col;
+            if (col === sortCol) {
+                sortDir *= -1;
+            } else {
+                sortCol = col;
+                sortDir = th.dataset.dir === 'asc' ? 1 : -1;
+            }
+            sortTable();
+            updateArrows();
+        });
+    });
+
+    function sortTable() {
+        const tbody = document.getElementById('healthBody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+        rows.sort((a, b) => {
+            let av = a.dataset[sortCol] ?? '';
+            let bv = b.dataset[sortCol] ?? '';
+            if (sortCol === 'health') {
+                av = HEALTH_ORDER[av] ?? 9;
+                bv = HEALTH_ORDER[bv] ?? 9;
+                return sortDir * (av - bv);
+            }
+            const an = parseFloat(av), bn = parseFloat(bv);
+            if (!isNaN(an) && !isNaN(bn)) return sortDir * (an - bn);
+            return sortDir * av.localeCompare(bv);
+        });
+        rows.forEach(r => tbody.appendChild(r));
+    }
+
+    function updateArrows() {
+        document.querySelectorAll('#healthTable thead th').forEach(th => {
+            const arrow = th.querySelector('.sort-arrow');
+            if (!arrow) return;
+            if (th.dataset.col === sortCol) {
+                arrow.innerHTML = sortDir === 1 ? '&#9650;' : '&#9660;';
+                arrow.style.display = '';
+            } else {
+                arrow.style.display = 'none';
+            }
+        });
+    }
+
+    // hide non-active sort arrows on load
+    updateArrows();
+</script>
+</body>
+</html>

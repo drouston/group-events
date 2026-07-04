@@ -1176,17 +1176,18 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     return events
 
-def scrape_all_venues(mode='daily', llm='gpt4o-mini'):
-    """Scrape all venues and combine results"""
+def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False):
+    """Scrape all venues, save, and log stats per venue"""
     all_events = []
-
     for venue_key in VENUES.keys():
         try:
             events = scrape_venue(venue_key, mode=mode, llm=llm)
             all_events.extend(events)
+            if events is not None:
+                stats = save_to_database(events, mode=mode, auto_approve=auto_approve)
+                log_scrape_stats(args.venue, VENUES[venue_key]['name'], mode, stats)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
-
     return all_events
 
 def save_to_database(events, mode='daily', auto_approve=False):
@@ -1312,6 +1313,41 @@ def save_to_database(events, mode='daily', auto_approve=False):
     conn.commit()
     conn.close()
     print(f"  ✓ Inserted {inserted}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
+    return {
+        'inserted': inserted,
+        'skipped': skipped,
+        'flagged': flagged
+    }
+
+def log_scrape_stats(venue_key, venue_name, mode, stats, canceled_count=0):
+    if not DATABASE_URL:
+        return
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s'
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    # Get current totals
+    c.execute(f'''SELECT 
+        COUNT(*) FILTER (WHERE status = 'approved') as approved,
+        COUNT(*) FILTER (WHERE status = 'pending') as pending,
+        COUNT(*) FILTER (WHERE status = 'rejected') as rejected
+        FROM events WHERE venue = {ph}''', (venue_name,))
+    row = c.fetchone()
+    
+    c.execute(f'''INSERT INTO scrape_stats 
+        (scrape_date, venue, total_scraped, total_approved, total_rejected,
+         new_events, canceled_events, total_pending, scrape_mode)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+        (today, venue_key,
+         stats.get('inserted', 0) + stats.get('skipped', 0),
+         row[0], row[2],
+         stats.get('inserted', 0),
+         canceled_count,
+         row[1],
+         mode))
+    conn.commit()
+    conn.close()
 
 def detect_existing_duplicates(dry_run=False):
     """Scan the events table for possible duplicates and update their stads"""
