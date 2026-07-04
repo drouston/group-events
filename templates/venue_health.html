@@ -95,7 +95,14 @@
             color: #555;
         }
 
-        .chart-panel canvas { display: block; }
+        .chart-wrap {
+            position: relative;
+            height: 280px;
+        }
+
+        .chart-wrap.tall {
+            height: 360px;
+        }
 
         /* Table */
         .table-panel {
@@ -206,15 +213,15 @@
 <div class="charts-row">
     <div class="chart-panel">
         <h3>Upcoming Events by Venue</h3>
-        <canvas id="venueChart" height="300"></canvas>
+        <div class="chart-wrap tall"><canvas id="venueChart"></canvas></div>
     </div>
     <div class="chart-panel">
         <h3>New Events per Week</h3>
-        <canvas id="newWeekChart" height="300"></canvas>
+        <div class="chart-wrap"><canvas id="newWeekChart"></canvas></div>
     </div>
     <div class="chart-panel">
         <h3>Cancellations per Week</h3>
-        <canvas id="cancelWeekChart" height="300"></canvas>
+        <div class="chart-wrap"><canvas id="cancelWeekChart"></canvas></div>
     </div>
 </div>
 
