@@ -987,6 +987,13 @@ except Exception:
 
 @app.route('/venue_health')
 def venue_health():
+    import traceback
+    try:
+        return _venue_health_inner()
+    except Exception:
+        return '<pre>' + traceback.format_exc() + '</pre>', 500
+
+def _venue_health_inner():
     conn = get_db_connection()
     c = conn.cursor()
     today = datetime.now(CENTRAL).date().isoformat()
@@ -997,8 +1004,10 @@ def venue_health():
                 COUNT(*) FILTER (WHERE status = 'approved' AND start_date >= CURRENT_DATE) AS upcoming,
                 COUNT(*) FILTER (WHERE status IN ('pending','possible_duplicate')) AS pending,
                 COUNT(*) FILTER (WHERE status = 'canceled'
-                    AND created_at >= NOW() - INTERVAL '30 days') AS canceled_30d,
-                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'
+                    AND created_at IS NOT NULL AND created_at != ''
+                    AND created_at::timestamp >= NOW() - INTERVAL '30 days') AS canceled_30d,
+                COUNT(*) FILTER (WHERE created_at IS NOT NULL AND created_at != ''
+                    AND created_at::timestamp >= NOW() - INTERVAL '7 days'
                     AND status NOT IN ('rejected')) AS new_7d,
                 COUNT(*) FILTER (WHERE status = 'canceled') AS total_canceled
             FROM events
@@ -1008,25 +1017,35 @@ def venue_health():
         ''')
         venue_rows = c.fetchall()
 
-        c.execute('''
-            SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
-            FROM events
-            WHERE created_at IS NOT NULL AND created_at >= NOW() - INTERVAL '8 weeks'
-            GROUP BY week ORDER BY week
-        ''')
-        weekly_new_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+        try:
+            c.execute('''
+                SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
+                FROM events
+                WHERE created_at IS NOT NULL AND created_at != ''
+                AND created_at::timestamp >= NOW() - INTERVAL '8 weeks'
+                GROUP BY week ORDER BY week
+            ''')
+            weekly_new_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+        except Exception:
+            weekly_new_rows = []
 
-        c.execute('''
-            SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
-            FROM events
-            WHERE status = 'canceled' AND created_at IS NOT NULL
-            AND created_at >= NOW() - INTERVAL '8 weeks'
-            GROUP BY week ORDER BY week
-        ''')
-        weekly_cancel_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+        try:
+            c.execute('''
+                SELECT DATE_TRUNC('week', created_at::timestamp)::date AS week, COUNT(*) AS cnt
+                FROM events
+                WHERE status = 'canceled' AND created_at IS NOT NULL AND created_at != ''
+                AND created_at::timestamp >= NOW() - INTERVAL '8 weeks'
+                GROUP BY week ORDER BY week
+            ''')
+            weekly_cancel_rows = [(str(r[0]), r[1]) for r in c.fetchall()]
+        except Exception:
+            weekly_cancel_rows = []
 
-        c.execute('SELECT venue_key, last_scraped FROM venue_cache')
-        cache_rows = c.fetchall()
+        try:
+            c.execute('SELECT venue_key, last_scraped FROM venue_cache')
+            cache_rows = c.fetchall()
+        except Exception:
+            cache_rows = []
     else:
         c.execute('''
             SELECT venue,
@@ -1040,23 +1059,32 @@ def venue_health():
         ''', (today,))
         venue_rows = c.fetchall()
 
-        c.execute('''
-            SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
-            FROM events WHERE created_at IS NOT NULL AND created_at >= date('now','-56 days')
-            GROUP BY week ORDER BY week
-        ''')
-        weekly_new_rows = c.fetchall()
+        try:
+            c.execute('''
+                SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
+                FROM events WHERE created_at IS NOT NULL AND created_at >= date('now','-56 days')
+                GROUP BY week ORDER BY week
+            ''')
+            weekly_new_rows = c.fetchall()
+        except Exception:
+            weekly_new_rows = []
 
-        c.execute('''
-            SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
-            FROM events WHERE status='canceled' AND created_at IS NOT NULL
-            AND created_at >= date('now','-56 days')
-            GROUP BY week ORDER BY week
-        ''')
-        weekly_cancel_rows = c.fetchall()
+        try:
+            c.execute('''
+                SELECT strftime('%Y-%W', created_at) AS week, COUNT(*) AS cnt
+                FROM events WHERE status='canceled' AND created_at IS NOT NULL
+                AND created_at >= date('now','-56 days')
+                GROUP BY week ORDER BY week
+            ''')
+            weekly_cancel_rows = c.fetchall()
+        except Exception:
+            weekly_cancel_rows = []
 
-        c.execute('SELECT venue_key, last_scraped FROM venue_cache')
-        cache_rows = c.fetchall()
+        try:
+            c.execute('SELECT venue_key, last_scraped FROM venue_cache')
+            cache_rows = c.fetchall()
+        except Exception:
+            cache_rows = []
 
     conn.close()
 
