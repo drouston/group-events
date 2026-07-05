@@ -672,6 +672,23 @@
             </div>
 
             <div class="filter-group">
+                <label>Event Type</label>
+                <select id="filter-event-type">
+                    <option value="all">All Types</option>
+                    <option value="music">Music</option>
+                    <option value="comedy">Comedy</option>
+                    <option value="open_mic">Open Mic</option>
+                    <option value="performing_arts">Performing Arts</option>
+                    <option value="arts">Arts</option>
+                    <option value="sports">Sports</option>
+                    <option value="happy_hour">Happy Hour</option>
+                    <option value="civic">Civic</option>
+                    <option value="private_event">Private Event</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
                 <label>Confidence Level</label>
                 <select id="filter-confidence">
                     <option value="all">All Levels</option>
@@ -880,6 +897,7 @@
                 status: document.getElementById('filter-status').value,
                 venue: document.getElementById('filter-venue').value,
                 genre: document.getElementById('filter-genre').value,
+                event_type: document.getElementById('filter-event-type').value,
                 confidence_level: document.getElementById('filter-confidence').value === 'all' ? null : document.getElementById('filter-confidence').value,
                 date_from: document.getElementById('filter-date-from').value,
                 date_to: document.getElementById('filter-date-to').value,
@@ -1418,6 +1436,7 @@
             document.getElementById('filter-status').value = 'pending';
             document.getElementById('filter-venue').value = 'all';
             document.getElementById('filter-genre').value = 'all';
+            document.getElementById('filter-event-type').value = 'all';
             document.getElementById('filter-confidence').value = 'all';
             document.getElementById('filter-date-from').value = '';
             document.getElementById('filter-date-to').value = '';

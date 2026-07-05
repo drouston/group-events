@@ -764,7 +764,11 @@ def filter_events():
     if filters.get('genre') and filters['genre'] != 'all':
         query += f' AND genre = {ph}'
         params.append(filters['genre'])
-    
+
+    if filters.get('event_type') and filters['event_type'] != 'all':
+        query += f' AND event_type = {ph}'
+        params.append(filters['event_type'])
+
     if filters.get('date_from'):
         query += f' AND start_date >= {ph}'
         params.append(filters['date_from'])
