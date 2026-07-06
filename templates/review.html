@@ -1414,13 +1414,10 @@
 
         function clearDupGroupFilter() {
             dupGroupFilter = null;
-            if (dupGroupPreviousEvents !== null) {
-                filteredEvents = dupGroupPreviousEvents;
-                dupGroupPreviousEvents = null;
-            }
+            dupGroupPreviousEvents = null;
             const banner = document.getElementById('dup-group-banner');
             if (banner) banner.style.display = 'none';
-            renderTable();
+            applyFilters();
         }
 
         function updateStats(events) {

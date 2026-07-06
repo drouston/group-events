@@ -319,6 +319,7 @@ def check_canceled_events(venue_key, scraped_events):
     conn.commit()
     conn.close()
     print(f"  {canceled_count} events flagged as canceled for {venue_name}")
+    return canceled_count
 
 def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None):
     """Scrape a page using Selenium"""
@@ -821,7 +822,7 @@ def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'
     else:
         char_limit = 100000
     
-    system_prompt = f"""You are an expert at extracting structured event data from venue websites.
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
 Extract ALL events from the provided text into a JSON array. For each event:
 - name: Full event name/title
 - start_date: YYYY-MM-DD format (use 2026 for dates without year)
@@ -857,7 +858,7 @@ def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False,
     """Extract events using LLM from text or HTML"""
     content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
-    system_prompt = f"""You are an expert at extracting structured event data from venue websites.
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
 Extract ALL events from the provided {content_type} into a JSON array. For each event:
 
 TITLE CLEANUP (apply before setting name):
@@ -1130,7 +1131,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     stored_hash = get_stored_hash(venue_key)
     if mode != 'onboard' and content_hash == stored_hash:
         print(f"  ↷ No changes detected, skipping LLM")
-        return []
+        return [], 0
     print(f"  ✓ Content changed, processing with LLM")
 
     print(f"  ✓ Content changed, processing with LLM")
@@ -1167,25 +1168,26 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
 
     # Weekly mode: check for canceled events
+    canceled_count = 0
     if mode == 'weekly':
-        check_canceled_events(venue_key, events)
+        canceled_count = check_canceled_events(venue_key, events)
 
     # Update stored hash
     if not args.dry_run:
         update_stored_hash(venue_key, content_hash)
 
-    return events
+    return events, canceled_count
 
 def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False):
     """Scrape all venues, save, and log stats per venue"""
     all_events = []
     for venue_key in VENUES.keys():
         try:
-            events = scrape_venue(venue_key, mode=mode, llm=llm)
+            events, canceled_count = scrape_venue(venue_key, mode=mode, llm=llm)
             all_events.extend(events)
             if events is not None:
                 stats = save_to_database(events, mode=mode, auto_approve=auto_approve)
-                log_scrape_stats(args.venue, VENUES[venue_key]['name'], mode, stats)
+                log_scrape_stats(venue_key, VENUES[venue_key]['name'], mode, stats)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
     return all_events
@@ -1217,6 +1219,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
     inserted = 0
     skipped = 0
     flagged = 0
+    updated = 0
 
     for event in events:
         try:
@@ -1232,6 +1235,45 @@ def save_to_database(events, mode='daily', auto_approve=False):
             if c.fetchone():
                 skipped += 1
                 continue
+
+            # Ticket URL match: same ticket_url means same event regardless of title/time drift.
+            # Update mutable fields in place rather than inserting a new row.
+            if event.get('ticket_url'):
+                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price
+                                FROM events
+                                WHERE ticket_url = {ph}
+                                AND status NOT IN ('rejected', 'canceled')
+                                LIMIT 1''',
+                            (event['ticket_url'],))
+                url_match = c.fetchone()
+                if url_match:
+                    ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price = url_match
+                    changes = {}
+                    if event['name'] != ex_name:
+                        changes['name'] = event['name']
+                    if event.get('start_time') is not None and event.get('start_time') != ex_start:
+                        changes['start_time'] = event['start_time']
+                    if event.get('doors_time') is not None and event.get('doors_time') != ex_doors:
+                        changes['doors_time'] = event['doors_time']
+                    if event.get('end_time') is not None and event.get('end_time') != ex_end:
+                        changes['end_time'] = event['end_time']
+                    if event.get('sold_out', False) != ex_sold_out:
+                        changes['sold_out'] = event.get('sold_out', False)
+                    if event.get('date_changed', False) != ex_date_changed:
+                        changes['date_changed'] = event.get('date_changed', False)
+                    if event.get('openers') and event.get('openers') != ex_openers:
+                        changes['openers'] = event['openers']
+                    if event.get('price') and event.get('price') != ex_price:
+                        changes['price'] = event['price']
+                    if changes:
+                        set_clause = ', '.join(f'{k} = {ph}' for k in changes)
+                        c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
+                                  list(changes.values()) + [ex_id])
+                        label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
+                        print(f"  ↻ Updated ({', '.join(changes)}): {label}")
+                        updated += 1
+                    skipped += 1
+                    continue
 
             # Near-match check: same name + start_date + venue, different start_time (ICS time update)
             # Single result means it's the same event with an updated time — update in place
@@ -1312,9 +1354,10 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     conn.commit()
     conn.close()
-    print(f"  ✓ Inserted {inserted}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
+    print(f"  ✓ Inserted {inserted}, updated {updated}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
     return {
         'inserted': inserted,
+        'updated': updated,
         'skipped': skipped,
         'flagged': flagged
     }
@@ -1473,7 +1516,7 @@ if __name__ == "__main__":
             print(f"✗ Unknown venue key: {args.venue}")
             print(f"  Available: {', '.join(VENUES.keys())}")
         else:
-            events = scrape_venue(args.venue, mode=args.mode, llm=args.llm, dry_run=args.dry_run)
+            events, canceled_count = scrape_venue(args.venue, mode=args.mode, llm=args.llm, dry_run=args.dry_run)
             if args.dry_run:
                 print(f"\n{'='*60}")
                 print(f"DRY RUN — {len(events)} events extracted, not saved")
@@ -1482,25 +1525,14 @@ if __name__ == "__main__":
                     print(f"  {e.get('start_date')} | {e.get('end_date')} |{e.get('start_time')} | {e.get('venue')} | {e.get('name')} | {ticket}")
                 print(f"{'='*60}")
             else:
-                if args.dry_run:
-                    print(f"\n{'='*60}")
-                    print(f"DRY RUN — {len(events)} events extracted, not saved")
-                    for e in events:
-                        print(f"  {e.get('start_date')} | doors:{e.get('doors_time')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
-                    print(f"{'='*60}")
-                else:
-                    save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
+                stats = save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
+                log_scrape_stats(args.venue, VENUES[args.venue]['name'], args.mode, stats)
     else:
-        all_events = scrape_all_venues(mode=args.mode, llm=args.llm)
+        all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve)
         if args.dry_run:
             print(f"\n{'='*60}")
             print(f"DRY RUN — {len(all_events)} events extracted, not saved")
             for e in all_events:
                 print(f"  {e.get('start_date')} | {e.get('start_time')} | {e.get('venue')} | {e.get('location')} | {e.get('name')}")
             print(f"{'='*60}")
-        else:
-            save_to_database(all_events, mode=args.mode, auto_approve=args.auto_approve)
-
-    print(f"\n{'='*60}")
     print(f"✓ Scrape complete")
-    print(f"{'='*60}")
