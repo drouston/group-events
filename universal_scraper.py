@@ -3,6 +3,7 @@ import json
 import time
 import sqlite3
 from dateutil.utils import today
+from difflib import SequenceMatcher
 import requests
 from datetime import datetime, timedelta
 
@@ -721,8 +722,20 @@ def scrape_google_ics(venue_config, mode='daily'):
         description = str(component.get('DESCRIPTION', '')) or None
 
         location = str(component.get('LOCATION', '')).strip()
-        venue = location.split(',')[0].strip() if location else venue_name  
-        
+        venue = location.split(',')[0].strip() if location else venue_name
+
+        # Skip events from venues we already scrape directly — ICS data is lower quality
+        # and would create duplicates. Compare against all non-ICS venue names.
+        venue_lower = venue.lower()
+        scraped_names = [v['name'].lower() for v in VENUES.values() if not v.get('ical_url')]
+        if any(
+            venue_lower in sn or sn in venue_lower or
+            SequenceMatcher(None, venue_lower, sn).ratio() >= 0.8
+            for sn in scraped_names
+        ):
+            print(f"  ↷ Skipping (already scraped venue): {venue} — {name.strip()}")
+            continue
+
         event = {
             'name': name.strip(),
             'start_date': event_date.strftime('%Y-%m-%d'),
