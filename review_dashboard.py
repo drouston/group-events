@@ -1141,6 +1141,118 @@ def _venue_health_inner():
         totals=totals,
     )
 
+@app.route('/health')
+def health():
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+
+    from datetime import date, timedelta
+    today = date.today()
+    days_since_monday = today.weekday()
+    this_monday = today - timedelta(days=days_since_monday)
+    week_starts = [(this_monday - timedelta(weeks=i)).isoformat() for i in range(11, -1, -1)]
+    twelve_weeks_ago = (this_monday - timedelta(weeks=11)).isoformat()
+
+    # Scrape stats per venue per week
+    c.execute(f'''
+        SELECT venue, scrape_date, total_scraped, total_approved, total_rejected
+        FROM scrape_stats
+        WHERE scrape_date >= {ph}
+        ORDER BY venue, scrape_date
+    ''', (twelve_weeks_ago,))
+    raw_stats = c.fetchall()
+
+    # Last scrape date per venue
+    c.execute('''
+        SELECT venue, MAX(scrape_date) as last_scrape
+        FROM scrape_stats
+        GROUP BY venue
+    ''')
+    last_scrape_map = {row[0]: row[1] for row in c.fetchall()}
+
+    # Current event counts per venue
+    c.execute(f'''
+        SELECT venue,
+               COUNT(*) FILTER (WHERE status = 'approved') as approved,
+               COUNT(*) FILTER (WHERE status = 'pending') as pending,
+               COUNT(*) FILTER (WHERE status = 'possible_duplicate') as duplicates,
+               COUNT(*) FILTER (WHERE status = 'canceled') as canceled,
+               COUNT(*) FILTER (WHERE start_time IS NULL AND status = 'approved') as missing_time,
+               COUNT(*) FILTER (WHERE ticket_url IS NULL AND event_url IS NULL AND status = 'approved') as missing_url
+        FROM events
+        WHERE start_date >= {ph}
+        GROUP BY venue
+        ORDER BY venue
+    ''', (today.isoformat(),))
+    event_counts = {row[0]: {
+        'approved': row[1],
+        'pending': row[2],
+        'duplicates': row[3],
+        'canceled': row[4],
+        'missing_time': row[5],
+        'missing_url': row[6]
+    } for row in c.fetchall()}
+
+    conn.close()
+
+    # Organize stats by venue
+    from collections import defaultdict
+    stats_by_venue = defaultdict(lambda: {w: {'scraped': 0, 'approved': 0, 'rejected': 0} for w in week_starts})
+    for row in raw_stats:
+        venue, scrape_date, scraped, approved, rejected = row
+        # Find which week this belongs to
+        scrape_d = date.fromisoformat(str(scrape_date)[:10])
+        days_offset = (scrape_d - this_monday).days
+        week_idx = 11 + (days_offset // 7)
+        if 0 <= week_idx <= 11:
+            week_key = week_starts[week_idx]
+            stats_by_venue[venue][week_key]['scraped'] += scraped or 0
+            stats_by_venue[venue][week_key]['approved'] += approved or 0
+            stats_by_venue[venue][week_key]['rejected'] += rejected or 0
+
+    # Build venue health data
+    venues_health = []
+    for venue_name in sorted(event_counts.keys()):
+        counts = event_counts[venue_name]
+        last_scrape = last_scrape_map.get(venue_name)
+        
+        # Health flags
+        stale = False
+        if last_scrape:
+            last_scrape_d = date.fromisoformat(str(last_scrape)[:10])
+            stale = (today - last_scrape_d).days > 7
+
+        approved = counts['approved'] or 0
+        missing_time_pct = round(counts['missing_time'] / approved * 100) if approved > 0 else 0
+        missing_url_pct = round(counts['missing_url'] / approved * 100) if approved > 0 else 0
+
+        health = 'good'
+        if stale or counts['duplicates'] > 3:
+            health = 'warning'
+        if stale and counts['approved'] == 0:
+            health = 'error'
+
+        weekly = [stats_by_venue[venue_name][w]['scraped'] for w in week_starts]
+
+        venues_health.append({
+            'name': venue_name,
+            'approved': approved,
+            'pending': counts['pending'],
+            'duplicates': counts['duplicates'],
+            'canceled': counts['canceled'],
+            'missing_time_pct': missing_time_pct,
+            'missing_url_pct': missing_url_pct,
+            'last_scrape': str(last_scrape)[:10] if last_scrape else 'Never',
+            'stale': stale,
+            'health': health,
+            'weekly': weekly
+        })
+
+    return render_template('health.html',
+                           venues=venues_health,
+                           week_labels=[w[5:] for w in week_starts])  # MM-DD format
+
 
 if __name__ == '__main__':
     init_db()
