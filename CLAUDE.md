@@ -159,6 +159,7 @@ GET  /debug               # Debug info
 - [ ] Archive logic — move approved past events to `past_events` table (weekly job)
 - [ ] Location filter in review dashboard
 - [ ] Multi-night event expansion for Improv (e.g. "Apr 17-18" → two events)
+- [ ] Toyota Center needs a dedicated HTML parser (like White Oak's) — every event's ticket button renders identical anchor text ("More Info & Ticket Options") with no distinguishing per-event label, so the LLM can't reliably match hrefs to events from the flattened page text + link list. This causes a systematic off-by-one misattribution of `ticket_url`/`event_url` between neighboring events (confirmed both in fresh scrapes and in historical data — e.g. two different past events shared an identical AXS ticket link). DB is intentionally left empty for this venue until fixed rather than serve wrong ticket links.
 
 ### Architecture / Scale
 - [ ] Venues table — migrate VENUES dict from scraper to DB
@@ -176,6 +177,11 @@ GET  /debug               # Debug info
 - [ ] Venue discovery automation (Google Places API, Songkick, etc.)
 - [ ] User-submitted venue suggestions
 - [ ] `possible_duplicate` status filter in dashboard (added to filter dropdown)
+
+### ML Classification (exploratory, not scheduled)
+Classical ML (not LLM) is a fit for the specific sub-tasks in the pipeline that are genuinely fixed-label classification problems — not for event extraction itself. Extraction (name/date/ticket_url identification, matching links to the right event) should stay LLM- or parser-based: every venue's page layout differs and changes over time, and a trained classifier only generalizes to layouts resembling its training data, unlike an LLM which needs zero venue-specific training. That tradeoff gets worse, not better, at the 100→1000 venue target.
+- [ ] Duplicate-detection classifier — replace the fixed fuzzy-name-ratio threshold (`SequenceMatcher`, hand-tuned per venue via `duplicate_threshold`) with a learned model over engineered features (name similarity, date/time delta, venue match, shared ticket_url/event_url). Label source: dashboard approve/reject actions on `possible_duplicate` rows — though this is a noisy signal (a reject doesn't always mean "confirmed duplicate"), and there isn't enough resolved volume yet to train on. Motivated by concrete false positives seen in practice (e.g. "Bob Schneider" vs "Bob Schneider – Early Show", "Texas Elite Auto Showcase" vs "Texas Trucking Show").
+- [ ] Canceled-event detection — `check_canceled_events` also uses a fixed fuzzy-match threshold (0.85); same category of candidate as duplicate detection, same caveat about needing more labeled history first.
 
 ---
 

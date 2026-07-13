@@ -4,6 +4,7 @@ import time
 import sqlite3
 from dateutil.utils import today
 from difflib import SequenceMatcher
+from urllib.parse import urljoin
 import requests
 from datetime import datetime, timedelta
 
@@ -122,6 +123,7 @@ VENUES = {
     },
     "woodland_pavilion": {
         "name": "Cynthia Woods Mitchell Pavilion",
+        "aliases": ["Woodlands Pavilion", "The Woodlands Pavilion"],
         "url": "https://www.woodlandscenter.org/events",
         "city": "The Woodlands",
         "state": "TX",
@@ -161,7 +163,6 @@ VENUES = {
         "scroll_count": 1,
         "paginated": True,
         "next_page_selector": "#moreshowsbtn",
-        "page_param": "start",
         "venue_instruction": "This page covers multiple Texas Improv locations. Only extract events for 'Houston Improv' — ignore Addison Improv, Arlington Improv, LOL San Antonio and any other locations. Set venue to 'Improv Houston' and city to 'Houston' for all extracted events.",
     },
     "riot_comedy": {
@@ -236,6 +237,24 @@ VENUES = {
         "event_type": "comedy",
         "venue_instruction": "Extract all comedy shows. This is a comedy club.",
         "scrolls": 5,
+    },
+    "shady_acres": {
+        "name": "Shady Acres Saloon",
+        "url": "https://shadyacressaloon.com/events/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "paginated": True,
+        "next_page_selector": "a.frmcal-next",
+        "max_pages": 3,
+    },
+    "mucky_duck": {
+        "name": "McGonigel's Mucky Duck",
+        "url": "https://www.mcgonigels.com/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 6,
+        "scroll_count": 5,
     },
 }
 
@@ -459,6 +478,14 @@ def scrape_timely_api(venue_config, mode='daily'):
                 is_private = any(phrase in title_lower for phrase in ['private party', 'closed for private', 'private event'])
                 event_type = 'private_event' if is_private else None
 
+                # Timely's cost_external_url is sometimes a Square ad-hoc checkout-session
+                # link (checkout.square.site/merchant/.../checkout/<id>), which is ephemeral
+                # and can 404 within days — unlike the permanent *.square.site/product/... page.
+                # Since events sit in the DB for weeks before their date, don't trust the
+                # ephemeral shape at all; fall back to the stable Timely event_url instead.
+                cost_external_url = item.get('cost_external_url')
+                ticket_url = cost_external_url if cost_external_url and 'checkout.square.site/merchant' not in cost_external_url else None
+
                 event = {
                     'name': item.get('title', ''),
                     'start_date': start_dt[:10] if start_dt else None,
@@ -472,7 +499,7 @@ def scrape_timely_api(venue_config, mode='daily'):
                     'city': city,
                     'state': state,
                     'price': item.get('cost_display'),
-                    'ticket_url': item.get('cost_external_url'),
+                    'ticket_url': ticket_url,
                     'event_url': item.get('url'),
                     'description': item.get('description_short', ''),
                     'genre': None,
@@ -725,9 +752,16 @@ def scrape_google_ics(venue_config, mode='daily'):
         venue = location.split(',')[0].strip() if location else venue_name
 
         # Skip events from venues we already scrape directly — ICS data is lower quality
-        # and would create duplicates. Compare against all non-ICS venue names.
+        # and would create duplicates. Compare against all non-ICS venue names and known aliases
+        # (fuzzy matching alone misses nicknames like "Woodlands Pavilion" for "Cynthia Woods
+        # Mitchell Pavilion" that don't share enough characters to clear the ratio threshold).
         venue_lower = venue.lower()
-        scraped_names = [v['name'].lower() for v in VENUES.values() if not v.get('ical_url')]
+        scraped_names = []
+        for v in VENUES.values():
+            if v.get('ical_url'):
+                continue
+            scraped_names.append(v['name'].lower())
+            scraped_names.extend(a.lower() for a in v.get('aliases', []))
         if any(
             venue_lower in sn or sn in venue_lower or
             SequenceMatcher(None, venue_lower, sn).ratio() >= 0.8
@@ -867,8 +901,13 @@ Return ONLY valid JSON with an "events" array."""
     user_prompt = f"Extract events from this page:\n\n{page_text[:char_limit]}"
     return get_llm_response(system_prompt, user_prompt, llm=llm)
 
-def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None, llm='gpt4o-mini'):
-    """Extract events using LLM from text or HTML"""
+def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
+    """Extract events using LLM from text or HTML.
+
+    Splits and retries on JSON truncation (a high event count can exceed the model's
+    output token cap) rather than failing the whole venue outright. _depth guards
+    against infinite recursion if a chunk keeps failing for an unrelated reason.
+    """
     content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
     system_prompt = f"""You are an expert at extracting structured event data from venue websites. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
@@ -909,7 +948,23 @@ Fields to extract:
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
 Return ONLY valid JSON with an "events" array containing ALL events found."""
     user_prompt = f"Extract all events:\n\n{content}"
-    return get_llm_response(system_prompt, user_prompt, llm=llm)
+    try:
+        return get_llm_response(system_prompt, user_prompt, llm=llm)
+    except json.JSONDecodeError:
+        if _depth >= 3 or len(content) < 4000:
+            raise
+        print(f"  ⚠ LLM response truncated ({len(content)} chars sent) — splitting content and retrying")
+        body, marker, links_block = content.partition('\n\nLINKS:\n')
+        links_suffix = f'{marker}{links_block}' if marker else ''
+        mid = len(body) // 2
+        split_at = body.rfind('\n', 0, mid)
+        if split_at == -1:
+            split_at = mid
+        first_half = body[:split_at] + links_suffix
+        second_half = body[split_at:] + links_suffix
+        result_a = extract_events_with_llm_raw(first_half, venue_name, city, state, is_html, venue_instruction, llm, _depth + 1)
+        result_b = extract_events_with_llm_raw(second_half, venue_name, city, state, is_html, venue_instruction, llm, _depth + 1)
+        return {'events': result_a.get('events', []) + result_b.get('events', [])}
 
 def parse_white_oak_html(html):
     """Parse White Oak events directly from HTML"""
@@ -1022,7 +1077,116 @@ def parse_white_oak_html(html):
         except Exception as e:
             print(f"Error parsing event: {e}")
             continue
-    
+
+    return {'events': events}
+
+def parse_mucky_duck_html(html):
+    """Parse McGonigel's Mucky Duck events directly from HTML (Tessera plugin cards).
+
+    Card dates omit the year entirely, so it's inferred by walking cards in document
+    order (which is chronological) and bumping the year whenever data-month rolls
+    backward — more reliable than asking an LLM to reason about the Dec->Jan wrap.
+    """
+    from bs4 import BeautifulSoup
+    import re
+
+    soup = BeautifulSoup(html, 'html.parser')
+    events = []
+
+    cards = soup.find_all('div', class_='tessera-show-card')
+
+    current_year = datetime.now().year
+    last_month = 0
+
+    # Tags that describe show format/logistics rather than genre — keep these out
+    # of the genre field so they don't pollute the dashboard's genre filter dropdown.
+    non_genre_tag_pattern = re.compile(r'\d|\$|\b(am|pm|ticket|dinner|sing)\b', re.IGNORECASE)
+
+    for card in cards:
+        try:
+            title_elem = card.find('h4', class_='card-title')
+            if not title_elem:
+                continue
+            name = title_elem.get_text(strip=True)
+
+            date_span = card.find('span', class_='date')
+            month_num = card.get('data-month')
+            if not date_span or not month_num:
+                continue
+            month_num = int(month_num)
+            day_match = re.search(r'(\d{1,2})\s*$', date_span.get_text(strip=True))
+            if not day_match:
+                continue
+            day = int(day_match.group(1))
+
+            if month_num < last_month:
+                current_year += 1
+            last_month = month_num
+            start_date = f"{current_year}-{month_num:02d}-{day:02d}"
+
+            # First am/pm time mentioned is the door/showtime, matching how these
+            # dinner-then-show listings are meant to be read (e.g. "6pm Dinner-8pm Sing").
+            start_time = None
+            times_elem = card.find('div', class_='tessera-showTimes')
+            if times_elem:
+                time_text = times_elem.get_text(strip=True)
+                time_match = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)', time_text, re.IGNORECASE)
+                if time_match:
+                    hour = int(time_match.group(1))
+                    minute = time_match.group(2) or '00'
+                    ampm = time_match.group(3).lower()
+                else:
+                    # No am/pm suffix (e.g. "Showtime 8:30") — every show here is an
+                    # evening slot, so a bare hour defaults to PM.
+                    bare_match = re.search(r'(\d{1,2}):(\d{2})', time_text)
+                    hour = int(bare_match.group(1)) if bare_match else None
+                    minute = bare_match.group(2) if bare_match else None
+                    ampm = 'pm'
+                if hour is not None:
+                    if ampm == 'pm' and hour != 12:
+                        hour += 12
+                    elif ampm == 'am' and hour == 12:
+                        hour = 0
+                    start_time = f"{hour:02d}:{minute}"
+
+            link = card.find('a', href=True)
+            event_url = link['href'] if link else None
+
+            genre = None
+            tags = card.get('data-tags', '').strip()
+            if tags and not non_genre_tag_pattern.search(tags):
+                genre = tags
+
+            events.append({
+                'name': name,
+                'start_date': start_date,
+                'end_date': None,
+                'multi_day': False,
+                'start_time': start_time,
+                'end_time': None,
+                'doors_time': None,
+                'venue': "McGonigel's Mucky Duck",
+                'location': None,
+                'city': 'Houston',
+                'state': 'TX',
+                'price': None,
+                'ticket_url': None,
+                'event_url': event_url,
+                'description': None,
+                'genre': genre,
+                'confidence': {
+                    'name': 1.0,
+                    'start_date': 1.0,
+                    'time': 0.8 if start_time else 0.0,
+                    'price': 0.0,
+                    'genre': 0.8 if genre else 0.0
+                }
+            })
+
+        except Exception as e:
+            print(f"Error parsing event: {e}")
+            continue
+
     return {'events': events}
 
 def pre_filter_dates(venue_name, page_text):
@@ -1094,11 +1258,12 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     scroll_count = venue.get('scroll_count', 1)
 
     # Handle paginated venues
-    if venue.get('paginated') and venue.get('page_param'):
+    if venue.get('paginated'):
         combined_text = ''
         current_url = venue['url']
         page_num = 1
-        max_pages = 10  # Safety limit
+        max_pages = venue.get('max_pages', 10)  # Safety limit
+        next_page_selector = venue.get('next_page_selector', '#moreshowsbtn')
 
         while current_url and page_num <= max_pages:
             print(f"  Fetching page {page_num}: {current_url}")
@@ -1113,15 +1278,9 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
             # Look for next page link
             soup = BeautifulSoup(html, 'html.parser')
-            next_link = soup.find('a', id='moreshowsbtn')
+            next_link = soup.select_one(next_page_selector)
             if next_link and next_link.get('href'):
-                href = next_link['href']
-                # Build full URL if relative
-                if href.startswith('?'):
-                    base = venue['url'].split('?')[0]
-                    current_url = base + href
-                else:
-                    current_url = href
+                current_url = urljoin(current_url, next_link['href'])
                 page_num += 1
             else:
                 break
@@ -1158,9 +1317,11 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         print(page_text[:15000])
         print(f"--- END PREVIEW ---\n")
 
-    # Use custom parser for White Oak
+    # Use custom parsers for venues with reliable per-event HTML structure
     if venue_key == 'white_oak':
         events_data = parse_white_oak_html(html)
+    elif venue_key == 'mucky_duck':
+        events_data = parse_mucky_duck_html(html)
     else:
         char_limit = 100000
         venue_instruction = venue.get('venue_instruction', '')
@@ -1249,44 +1410,71 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 skipped += 1
                 continue
 
-            # Ticket URL match: same ticket_url means same event regardless of title/time drift.
-            # Update mutable fields in place rather than inserting a new row.
+            # URL match: same ticket_url means same event regardless of title/time drift.
+            # Scoped to venue+start_date too — some venues (e.g. a generic storefront link
+            # reused across every show, or a comedian's profile page reused across their
+            # multiple nights) don't have a per-event-unique ticket_url, so a bare URL match
+            # could otherwise silently merge two different dates' events together.
+            # Only fall back to event_url (scoped to venue) when a venue has no ticket_url at all —
+            # some venues' event_url extraction isn't reliably one-to-one with events (can drift by
+            # position across a scrape), so it must not override a venue's real ticket_url signal.
             if event.get('ticket_url'):
                 c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price
                                 FROM events
-                                WHERE ticket_url = {ph}
+                                WHERE ticket_url = {ph} AND venue = {ph} AND start_date = {ph}
                                 AND status NOT IN ('rejected', 'canceled')
                                 LIMIT 1''',
-                            (event['ticket_url'],))
+                            (event['ticket_url'], event['venue'], event.get('start_date')))
                 url_match = c.fetchone()
-                if url_match:
-                    ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price = url_match
-                    changes = {}
-                    if event['name'] != ex_name:
-                        changes['name'] = event['name']
-                    if event.get('start_time') is not None and event.get('start_time') != ex_start:
-                        changes['start_time'] = event['start_time']
-                    if event.get('doors_time') is not None and event.get('doors_time') != ex_doors:
-                        changes['doors_time'] = event['doors_time']
-                    if event.get('end_time') is not None and event.get('end_time') != ex_end:
-                        changes['end_time'] = event['end_time']
-                    if event.get('sold_out', False) != ex_sold_out:
-                        changes['sold_out'] = event.get('sold_out', False)
-                    if event.get('date_changed', False) != ex_date_changed:
-                        changes['date_changed'] = event.get('date_changed', False)
-                    if event.get('openers') and event.get('openers') != ex_openers:
-                        changes['openers'] = event['openers']
-                    if event.get('price') and event.get('price') != ex_price:
-                        changes['price'] = event['price']
-                    if changes:
-                        set_clause = ', '.join(f'{k} = {ph}' for k in changes)
-                        c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
-                                  list(changes.values()) + [ex_id])
-                        label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
-                        print(f"  ↻ Updated ({', '.join(changes)}): {label}")
-                        updated += 1
-                    skipped += 1
-                    continue
+            elif event.get('event_url'):
+                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price
+                                FROM events
+                                WHERE venue = {ph} AND event_url = {ph}
+                                AND status NOT IN ('rejected', 'canceled')
+                                LIMIT 1''',
+                            (event['venue'], event['event_url']))
+                url_match = c.fetchone()
+            else:
+                url_match = None
+            if url_match:
+                # A URL match alone isn't sufficient proof of identity when a venue reuses one
+                # link across genuinely different shows (a generic storefront link, a comedian's
+                # profile page reused across their own multiple nights, etc.) — require the names
+                # to be at least plausibly related so two unrelated same-venue/same-date events
+                # that happen to share a link don't get silently merged. Legitimate title drift
+                # (an opener added, punctuation changes) stays well above this floor.
+                NAME_SIMILARITY_FLOOR = 0.4
+                url_match_name_similarity = SequenceMatcher(None, event['name'].lower(), url_match[1].lower()).ratio()
+                if url_match_name_similarity < NAME_SIMILARITY_FLOOR:
+                    url_match = None
+            if url_match:
+                ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price = url_match
+                changes = {}
+                if event['name'] != ex_name:
+                    changes['name'] = event['name']
+                if event.get('start_time') is not None and event.get('start_time') != ex_start:
+                    changes['start_time'] = event['start_time']
+                if event.get('doors_time') is not None and event.get('doors_time') != ex_doors:
+                    changes['doors_time'] = event['doors_time']
+                if event.get('end_time') is not None and event.get('end_time') != ex_end:
+                    changes['end_time'] = event['end_time']
+                if event.get('sold_out', False) != ex_sold_out:
+                    changes['sold_out'] = event.get('sold_out', False)
+                if event.get('date_changed', False) != ex_date_changed:
+                    changes['date_changed'] = event.get('date_changed', False)
+                if event.get('openers') and event.get('openers') != ex_openers:
+                    changes['openers'] = event['openers']
+                if event.get('price') and event.get('price') != ex_price:
+                    changes['price'] = event['price']
+                if changes:
+                    set_clause = ', '.join(f'{k} = {ph}' for k in changes)
+                    c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
+                              list(changes.values()) + [ex_id])
+                    label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
+                    print(f"  ↻ Updated ({', '.join(changes)}): {label}")
+                    updated += 1
+                skipped += 1
+                continue
 
             # Near-match check: same name + start_date + venue, different start_time (ICS time update)
             # Single result means it's the same event with an updated time — update in place
