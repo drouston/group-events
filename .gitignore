@@ -2,7 +2,7 @@ venv/
 __pycache__/
 *.pyc
 *.db
-*.html
+/*.html
 raw_page.html
 ticketmaster_events.json
 *.egg-info/
