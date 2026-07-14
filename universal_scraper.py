@@ -1361,7 +1361,7 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False):
             all_events.extend(events)
             if events is not None:
                 stats = save_to_database(events, mode=mode, auto_approve=auto_approve)
-                log_scrape_stats(venue_key, VENUES[venue_key]['name'], mode, stats)
+                log_scrape_stats(VENUES[venue_key]['name'], mode, stats, canceled_count)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
     return all_events
@@ -1563,7 +1563,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
         'flagged': flagged
     }
 
-def log_scrape_stats(venue_key, venue_name, mode, stats, canceled_count=0):
+def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
     if not DATABASE_URL:
         return
     conn = get_db_connection()
@@ -1579,11 +1579,11 @@ def log_scrape_stats(venue_key, venue_name, mode, stats, canceled_count=0):
         FROM events WHERE venue = {ph}''', (venue_name,))
     row = c.fetchone()
     
-    c.execute(f'''INSERT INTO scrape_stats 
+    c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
          new_events, canceled_events, total_pending, scrape_mode)
         VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
-        (today, venue_key,
+        (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
          stats.get('inserted', 0),
@@ -1727,7 +1727,7 @@ if __name__ == "__main__":
                 print(f"{'='*60}")
             else:
                 stats = save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
-                log_scrape_stats(args.venue, VENUES[args.venue]['name'], args.mode, stats)
+                log_scrape_stats(VENUES[args.venue]['name'], args.mode, stats, canceled_count)
     else:
         all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve)
         if args.dry_run:

@@ -1156,7 +1156,7 @@ def health():
 
     # Scrape stats per venue per week
     c.execute(f'''
-        SELECT venue, scrape_date, total_scraped, total_approved, total_rejected
+        SELECT venue, scrape_date, total_scraped, total_approved, total_rejected, canceled_events
         FROM scrape_stats
         WHERE scrape_date >= {ph}
         ORDER BY venue, scrape_date
@@ -1198,9 +1198,9 @@ def health():
 
     # Organize stats by venue
     from collections import defaultdict
-    stats_by_venue = defaultdict(lambda: {w: {'scraped': 0, 'approved': 0, 'rejected': 0} for w in week_starts})
+    stats_by_venue = defaultdict(lambda: {w: {'scraped': 0, 'approved': 0, 'rejected': 0, 'canceled': 0} for w in week_starts})
     for row in raw_stats:
-        venue, scrape_date, scraped, approved, rejected = row
+        venue, scrape_date, scraped, approved, rejected, canceled = row
         # Find which week this belongs to
         scrape_d = date.fromisoformat(str(scrape_date)[:10])
         days_offset = (scrape_d - this_monday).days
@@ -1210,6 +1210,7 @@ def health():
             stats_by_venue[venue][week_key]['scraped'] += scraped or 0
             stats_by_venue[venue][week_key]['approved'] += approved or 0
             stats_by_venue[venue][week_key]['rejected'] += rejected or 0
+            stats_by_venue[venue][week_key]['canceled'] += canceled or 0
 
     # Build venue health data
     venues_health = []
@@ -1234,6 +1235,7 @@ def health():
             health = 'error'
 
         weekly = [stats_by_venue[venue_name][w]['scraped'] for w in week_starts]
+        weekly_canceled = [stats_by_venue[venue_name][w]['canceled'] for w in week_starts]
 
         venues_health.append({
             'name': venue_name,
@@ -1246,7 +1248,8 @@ def health():
             'last_scrape': str(last_scrape)[:10] if last_scrape else 'Never',
             'stale': stale,
             'health': health,
-            'weekly': weekly
+            'weekly': weekly,
+            'weekly_canceled': weekly_canceled
         })
 
     return render_template('health.html',

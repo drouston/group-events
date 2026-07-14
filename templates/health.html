@@ -190,6 +190,8 @@
 
   .bar:hover { background: var(--accent); }
   .bar.zero { background: var(--bar); }
+  .bar.canceled { background: var(--error); }
+  .bar.canceled:hover { background: var(--error); }
 
   .week-labels {
     display: flex;
@@ -268,6 +270,22 @@
       {% set height = (count / max_val * 100)|int if max_val > 0 else 0 %}
       <div class="bar-wrap">
         <div class="bar {% if count == 0 %}zero{% endif %}" style="height: {{ [height, 4]|max }}%;" title="{{ count }} events"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="week-labels">
+      {% for label in week_labels %}
+      <div class="week-label">{{ label }}</div>
+      {% endfor %}
+    </div>
+
+    <div class="chart-label">Canceled per week</div>
+    <div class="bars">
+      {% set max_cancel = v.weekly_canceled | max %}
+      {% for count in v.weekly_canceled %}
+      {% set height = (count / max_cancel * 100)|int if max_cancel > 0 else 0 %}
+      <div class="bar-wrap">
+        <div class="bar {% if count == 0 %}zero{% else %}canceled{% endif %}" style="height: {{ [height, 4]|max }}%;" title="{{ count }} canceled"></div>
       </div>
       {% endfor %}
     </div>
