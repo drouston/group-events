@@ -160,6 +160,7 @@ GET  /debug               # Debug info
 - [ ] Location filter in review dashboard
 - [ ] Multi-night event expansion for Improv (e.g. "Apr 17-18" → two events)
 - [ ] Toyota Center needs a dedicated HTML parser (like White Oak's) — every event's ticket button renders identical anchor text ("More Info & Ticket Options") with no distinguishing per-event label, so the LLM can't reliably match hrefs to events from the flattened page text + link list. This causes a systematic off-by-one misattribution of `ticket_url`/`event_url` between neighboring events (confirmed both in fresh scrapes and in historical data — e.g. two different past events shared an identical AXS ticket link). DB is intentionally left empty for this venue until fixed rather than serve wrong ticket links.
+- [ ] Review the city-calendar-sourced venues (`houcalendar`, `houston_city_calendar`) for cleanup — large unreviewed pending backlogs (e.g. Houston Museum of Natural Science, Sabine Street Studios, City Hall each in the 70-100 pending range). Focus first on parks with performing-arts stages (Miller Outdoor Theatre, Memorial Park, etc.) since those are the most likely to have real music/performing-arts events worth surfacing on the public calendar, versus generic city/civic listings.
 
 ### Architecture / Scale
 - [ ] Venues table — migrate VENUES dict from scraper to DB

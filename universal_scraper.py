@@ -167,11 +167,11 @@ VENUES = {
     },
     "riot_comedy": {
         "name": "The Riot Comedy Club",
-        "url": "https://theriothtx.com/headlining-comedians-at-the-riot-comedy-club-in-houston-texas/",
+        "url": "https://www.theriothtx.com/calendar",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 5,
-        "scroll_count": 2
+        "wait_time": 6,
+        "scroll_count": 5
     },
     "axelrad": {
         "name": "Axelrad Beer Garden",
@@ -205,7 +205,8 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
-        "scroll_count": 3
+        "scroll_count": 3,
+        "allows_multi_day": True
     },
     "houcalendar": {
         "name": "Houston Cultural Events Calendar",
@@ -256,6 +257,34 @@ VENUES = {
         "wait_time": 6,
         "scroll_count": 5,
     },
+    "secret_group": {
+        "name": "The Secret Group",
+        "url": "https://www.thesecretgrouphtx.com/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 12,
+        "pagination_sentinel": ".paginationControls",
+        "venue_instruction": "This venue hosts comedy shows nightly, weekly open mics, karaoke, themed DJ/dance nights, and touring concerts. Classify event_type as 'comedy' for comedy showcases and stand-up, 'open_mic' for open mic nights, 'music' for concerts, and 'other' for karaoke and dance nights.",
+    },
+    "hotel_lucine": {
+        "name": "Hotel Lucine",
+        "url": "https://www.hotellucine.com/events-calendar/list",
+        "city": "Galveston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+        "venue_instruction": "This venue is a hotel with live music (Sunset & Sounds series), wellness classes (yoga, pilates), and other happenings. Classify event_type as 'music' for Sunset & Sounds and other live music, and 'other' for wellness classes and non-music events.",
+    },
+    "echoes_htx": {
+        "name": "Echoes",
+        "aliases": ["Echoes HTX"],
+        "url": "https://www.echoeshtx.com/event-calendar",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
 }
 
 def get_content_hash(content):
@@ -295,13 +324,16 @@ def update_stored_hash(venue_key, content_hash):
 
 def check_canceled_events(venue_key, scraped_events):
     """Compare scraped events against DB future events, flag missing as canceled.
-    Uses fuzzy name matching to avoid false positives from minor title drift."""
+    A shared ticket_url/event_url counts as still-found regardless of name drift —
+    checked first since it's a stronger identity signal than fuzzy name matching.
+    Falls back to fuzzy name matching (to tolerate minor title drift) when a DB
+    event has no URL, or its URL isn't present in today's scrape."""
     conn = get_db_connection()
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
     venue_name = VENUES[venue_key]['name']
     today = datetime.now().strftime('%Y-%m-%d')
-    c.execute(f'''SELECT id, name, start_date FROM events
+    c.execute(f'''SELECT id, name, start_date, ticket_url, event_url FROM events
                  WHERE venue = {ph} AND start_date >= {ph}
                  AND status IN ('approved', 'pending')''',
               (venue_name, today))
@@ -309,10 +341,16 @@ def check_canceled_events(venue_key, scraped_events):
 
     # Build scraped names grouped by date for efficient same-day comparison
     scraped_by_date = {}
+    scraped_ticket_urls = set()
+    scraped_event_urls = set()
     for e in scraped_events:
         date = e.get('start_date')
         if date:
             scraped_by_date.setdefault(date, []).append(e['name'].strip().lower())
+        if e.get('ticket_url'):
+            scraped_ticket_urls.add(e['ticket_url'])
+        if e.get('event_url'):
+            scraped_event_urls.add(e['event_url'])
 
     FUZZY_THRESHOLD = 0.85
 
@@ -329,7 +367,11 @@ def check_canceled_events(venue_key, scraped_events):
         return False
 
     canceled_count = 0
-    for db_id, db_name, db_date in db_events:
+    for db_id, db_name, db_date, db_ticket_url, db_event_url in db_events:
+        if db_ticket_url and db_ticket_url in scraped_ticket_urls:
+            continue
+        if db_event_url and db_event_url in scraped_event_urls:
+            continue
         same_day = scraped_by_date.get(db_date, [])
         if not fuzzy_match(db_name, same_day):
             c.execute(f'''UPDATE events SET status = 'canceled'
@@ -341,7 +383,7 @@ def check_canceled_events(venue_key, scraped_events):
     print(f"  {canceled_count} events flagged as canceled for {venue_name}")
     return canceled_count
 
-def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None):
+def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None, pagination_sentinel=None):
     """Scrape a page using Selenium"""
     print(f"Fetching {url}...")
     
@@ -359,7 +401,17 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
         time.sleep(wait_time)
         
         for i in range(scroll_count):
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            if pagination_sentinel:
+                # Some infinite-scroll widgets watch a specific sentinel element via
+                # IntersectionObserver — jumping to document.body.scrollHeight overshoots
+                # it (trailing footer content pushes it above the viewport before the
+                # observer ever sees it enter view), so scroll the sentinel itself into view.
+                driver.execute_script(
+                    "var e=document.querySelector(arguments[0]); if(e) e.scrollIntoView({block:'center'});",
+                    pagination_sentinel
+                )
+            else:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
             print(f"  Scroll {i+1}/{scroll_count}")
         
@@ -390,12 +442,20 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
             tag.decompose()
         page_text = soup.get_text(separator='\n', strip=True)
 
-        # Append all external links so the LLM can extract ticket_url / event_url
+        # Append all external links so the LLM can extract ticket_url / event_url.
+        # Resolve every href to an absolute URL against this page's own URL here,
+        # rather than leaving relative paths for the LLM to resolve itself — a page
+        # that also happens to mention a different domain elsewhere (e.g. a sister
+        # venue link) can otherwise get the LLM to guess the wrong base domain for
+        # every relative link on the page.
         links_seen = set()
         link_lines = []
         for a in soup.find_all('a', href=True):
             href = a['href'].strip()
-            if not href or href.startswith('#') or href.startswith('mailto:') or href in links_seen:
+            if not href or href.startswith('#') or href.startswith('mailto:'):
+                continue
+            href = urljoin(url, href)
+            if href in links_seen:
                 continue
             links_seen.add(href)
             label = a.get_text(strip=True) or ''
@@ -1295,7 +1355,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             wait_time=venue.get('wait_time', 3),
             debug=debug,
             scroll_count=scroll_count,
-            load_more_id=venue.get('load_more_id')
+            load_more_id=venue.get('load_more_id'),
+            pagination_sentinel=venue.get('pagination_sentinel')
         )
 
     # Hash check — skip LLM if content unchanged (not for onboard mode)
@@ -1366,12 +1427,47 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False):
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
     return all_events
 
+def expand_multi_night_events(events):
+    """Expand a date-range event into one row per night, unless the venue is
+    configured to allow genuine multi-day continuous events (allows_multi_day).
+
+    The LLM's own multi_day flag has proven unreliable exactly where it matters
+    most: venues where a date range means separate nightly bookings (a comedian's
+    multi-night comedy-club run), not one continuous event like a festival or expo.
+    So this doesn't trust that flag — it goes by venue config instead.
+    """
+    venue_allows_multi_day = {v['name']: v.get('allows_multi_day', False) for v in VENUES.values()}
+    expanded = []
+    for event in events:
+        start = event.get('start_date')
+        end = event.get('end_date')
+        if start and end and str(end)[:10] != start and not venue_allows_multi_day.get(event.get('venue'), False):
+            try:
+                start_d = datetime.strptime(start, '%Y-%m-%d').date()
+                end_d = datetime.strptime(str(end)[:10], '%Y-%m-%d').date()
+            except ValueError:
+                expanded.append(event)
+                continue
+            day = start_d
+            while day <= end_d:
+                night_event = dict(event)
+                night_event['start_date'] = day.strftime('%Y-%m-%d')
+                night_event['end_date'] = None
+                night_event['multi_day'] = False
+                expanded.append(night_event)
+                day += timedelta(days=1)
+        else:
+            expanded.append(event)
+    return expanded
+
 def save_to_database(events, mode='daily', auto_approve=False):
     """Save events to database with exact and partial duplicate detection"""
     from difflib import SequenceMatcher
     dup_threshold_map = {v['name']: v.get('duplicate_threshold', 0.5) for v in VENUES.values()}
     auto_approve_map = {v['name']: v.get('auto_approve', False) for v in VENUES.values()}
     today = datetime.now().strftime('%Y-%m-%d')
+
+    events = expand_multi_night_events(events)
 
     #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
     before = len(events)
