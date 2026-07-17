@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import sqlite3
 from dateutil.utils import today
@@ -265,7 +266,6 @@ VENUES = {
         "wait_time": 5,
         "scroll_count": 12,
         "pagination_sentinel": ".paginationControls",
-        "venue_instruction": "This venue hosts comedy shows nightly, weekly open mics, karaoke, themed DJ/dance nights, and touring concerts. Classify event_type as 'comedy' for comedy showcases and stand-up, 'open_mic' for open mic nights, 'music' for concerts, and 'other' for karaoke and dance nights.",
     },
     "hotel_lucine": {
         "name": "Hotel Lucine",
@@ -274,7 +274,6 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
-        "venue_instruction": "This venue is a hotel with live music (Sunset & Sounds series), wellness classes (yoga, pilates), and other happenings. Classify event_type as 'music' for Sunset & Sounds and other live music, and 'other' for wellness classes and non-music events.",
     },
     "echoes_htx": {
         "name": "Echoes",
@@ -322,6 +321,14 @@ def update_stored_hash(venue_key, content_hash):
     conn.commit()
     conn.close()
 
+def strip_opener_clause(name):
+    """Strip a trailing opener/support-act clause ('with X', 'featuring X', 'presents X')
+    before computing name similarity. Two unrelated shows that each happen to list an
+    opener this way (e.g. "Cowboy Mouth with special guest Lvvrs" vs "Deer Tick with
+    special guest Presley Haile") can otherwise look deceptively similar on raw string
+    comparison and trigger a false-positive duplicate match against the wrong event."""
+    return re.sub(r'\s+(with|featuring|feat\.?|presents)\s+.*$', '', name, flags=re.IGNORECASE).strip()
+
 def check_canceled_events(venue_key, scraped_events):
     """Compare scraped events against DB future events, flag missing as canceled.
     A shared ticket_url/event_url counts as still-found regardless of name drift —
@@ -362,7 +369,7 @@ def check_canceled_events(venue_key, scraped_events):
             # Handle suffix additions like "(Sold Out)", "(New Date)"
             if db_lower in s or s in db_lower:
                 return True
-            if SequenceMatcher(None, db_lower, s).ratio() >= FUZZY_THRESHOLD:
+            if SequenceMatcher(None, strip_opener_clause(db_lower), strip_opener_clause(s)).ratio() >= FUZZY_THRESHOLD:
                 return True
         return False
 
@@ -1607,7 +1614,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
             dup_threshold = dup_threshold_map.get(event['venue'], 0.5)
             for ex_id, ex_name in existing:
                 similarity = SequenceMatcher(
-                    None, event['name'].lower(), ex_name.lower()
+                    None, strip_opener_clause(event['name'].lower()), strip_opener_clause(ex_name.lower())
                 ).ratio()
                 if similarity >= dup_threshold:
                     status = 'possible_duplicate'
