@@ -742,7 +742,7 @@ def ajax_scrape(venue_config, mode='daily'):
         return []
     
     print(f"  ✓ Fetched {offset} events worth of HTML via AJAX")
-    return extract_events_with_llm_raw(
+    events_data = extract_events_with_llm_raw(
         all_html,
         venue_config['name'],
         venue_config['city'],
@@ -750,6 +750,7 @@ def ajax_scrape(venue_config, mode='daily'):
         is_html=True,
         venue_instruction=venue_config.get('venue_instruction')
     )
+    return events_data.get('events', [])
 
 def scrape_google_ics(venue_config, mode='daily'):
     """Fetch events from a public Google Calendar ICS feed"""
@@ -1305,17 +1306,17 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     # Timely API venues — bypass Selenium + LLM entirely
     if venue.get('timely_calendar_id'):
-        return scrape_timely_api(venue, mode)
-    
+        return scrape_timely_api(venue, mode), 0
+
     # SeeTickets venues — scrape with Selenium but parse with custom HTML parser, no LLM
     if venue.get('seetickets'):
         _, html = scrape_page(venue['url'], wait_time=venue.get('wait_time', 3),
                             scroll_count=venue.get('scroll_count', 1),load_more_id=venue.get('load_more_id'))
-        return parse_seetickets_html(html, venue)
-    
+        return parse_seetickets_html(html, venue), 0
+
     # AJAX venues — fetch all paginated HTML fragments and parse with LLM in one go
     if venue.get('ajax_url'):
-        return ajax_scrape(venue, mode)
+        return ajax_scrape(venue, mode), 0
 
     # Google Calendar ICS feed — bypass Selenium + LLM entirely
     if venue.get('ical_url'):
