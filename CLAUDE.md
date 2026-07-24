@@ -201,8 +201,8 @@ Classical ML (not LLM) is a fit for the specific sub-tasks in the pipeline that 
 
 ### Continental Club / Big Top
 - Both venues share one Timely calendar URL
-- LLM splits them via `venue_instruction` in VENUES config
-- Venue name in event title is the signal for Big Top vs Continental Club
+- Bypasses the LLM entirely — `timely_calendar_id` in VENUES config routes this venue straight to `scrape_timely_api`, which hits Timely's API directly
+- Timely's own API response tags each event with a `taxonomy_venue` field, which `scrape_timely_api` reads directly to set `venue` per event (falls back to the VENUES config's `name` only if that taxonomy is missing) — the split is Timely's own structured data, not LLM inference
 
 ### Improv Houston
 - Uses `improv_tx` key, scrapes the all-TX-venues page

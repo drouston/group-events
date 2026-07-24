@@ -1154,9 +1154,11 @@ def health():
     week_starts = [(this_monday - timedelta(weeks=i)).isoformat() for i in range(11, -1, -1)]
     twelve_weeks_ago = (this_monday - timedelta(weeks=11)).isoformat()
 
-    # Scrape stats per venue per week
+    # Scrape stats per venue per week — new_events/canceled_events are true per-run
+    # deltas (unlike total_scraped, which includes already-seen duplicates re-detected,
+    # and total_approved/total_rejected, which are cumulative snapshots, not deltas)
     c.execute(f'''
-        SELECT venue, scrape_date, total_scraped, total_approved, total_rejected, canceled_events
+        SELECT venue, scrape_date, new_events, canceled_events
         FROM scrape_stats
         WHERE scrape_date >= {ph}
         ORDER BY venue, scrape_date
@@ -1198,26 +1200,30 @@ def health():
 
     # Organize stats by venue
     from collections import defaultdict
-    stats_by_venue = defaultdict(lambda: {w: {'scraped': 0, 'approved': 0, 'rejected': 0, 'canceled': 0} for w in week_starts})
+    stats_by_venue = defaultdict(lambda: {w: {'new_events': 0, 'canceled': 0} for w in week_starts})
     for row in raw_stats:
-        venue, scrape_date, scraped, approved, rejected, canceled = row
+        venue, scrape_date, new_events, canceled_events = row
         # Find which week this belongs to
         scrape_d = date.fromisoformat(str(scrape_date)[:10])
         days_offset = (scrape_d - this_monday).days
         week_idx = 11 + (days_offset // 7)
         if 0 <= week_idx <= 11:
             week_key = week_starts[week_idx]
-            stats_by_venue[venue][week_key]['scraped'] += scraped or 0
-            stats_by_venue[venue][week_key]['approved'] += approved or 0
-            stats_by_venue[venue][week_key]['rejected'] += rejected or 0
-            stats_by_venue[venue][week_key]['canceled'] += canceled or 0
+            stats_by_venue[venue][week_key]['new_events'] += new_events or 0
+            stats_by_venue[venue][week_key]['canceled'] += canceled_events or 0
+
+    # Severity ranking for combining multiple health signals
+    _health_rank = {'good': 0, 'warning': 1, 'error': 2}
+
+    def _worse_health(a, b):
+        return a if _health_rank[a] >= _health_rank[b] else b
 
     # Build venue health data
     venues_health = []
     for venue_name in sorted(event_counts.keys()):
         counts = event_counts[venue_name]
         last_scrape = last_scrape_map.get(venue_name)
-        
+
         # Health flags
         stale = False
         if last_scrape:
@@ -1234,8 +1240,48 @@ def health():
         if stale and counts['approved'] == 0:
             health = 'error'
 
-        weekly = [stats_by_venue[venue_name][w]['scraped'] for w in week_starts]
+        weekly = [stats_by_venue[venue_name][w]['new_events'] for w in week_starts]
         weekly_canceled = [stats_by_venue[venue_name][w]['canceled'] for w in week_starts]
+
+        # New-event trend detection — surfaces candidates for the manual venue health
+        # review (see VENUES.md), not a confirmed diagnosis: a decline can mean the
+        # scraper broke just as easily as it can mean the venue genuinely has fewer
+        # upcoming shows. Two independent signals, each with its own yellow/red tier;
+        # the more severe of the two wins.
+        recent_1wk = weekly[-1]
+        recent_3wk = sum(weekly[-3:])
+        recent_6wk = sum(weekly[-6:])
+        baseline_6wk = sum(weekly[-12:-6])
+        total_12wk = sum(weekly)
+
+        trend_label = None
+        trend_severity = 'good'
+
+        # Zero-new-events streak — only meaningful if this venue has produced a new
+        # event at some point in the trailing 12 weeks (otherwise it's a known
+        # low/no-yield venue behaving exactly as expected, e.g. Echoes HTX)
+        if total_12wk > 0:
+            if recent_3wk == 0:
+                trend_label = '0 new events in 3wk'
+                trend_severity = 'error'
+            elif recent_1wk == 0:
+                trend_label = '0 new events this wk'
+                trend_severity = 'warning'
+
+        # Rate-of-decline — only meaningful above a minimum baseline volume, otherwise
+        # small numbers produce meaningless "50% decline" noise (e.g. 2 -> 1)
+        if baseline_6wk >= 6:
+            decline_pct = round((1 - recent_6wk / baseline_6wk) * 100)
+            if recent_6wk <= baseline_6wk * 0.25:
+                if _health_rank['error'] > _health_rank[trend_severity]:
+                    trend_label = f'-{decline_pct}% new events (6wk)'
+                    trend_severity = 'error'
+            elif recent_6wk <= baseline_6wk * 0.5:
+                if _health_rank['warning'] > _health_rank[trend_severity]:
+                    trend_label = f'-{decline_pct}% new events (6wk)'
+                    trend_severity = 'warning'
+
+        health = _worse_health(health, trend_severity)
 
         venues_health.append({
             'name': venue_name,
@@ -1249,7 +1295,9 @@ def health():
             'stale': stale,
             'health': health,
             'weekly': weekly,
-            'weekly_canceled': weekly_canceled
+            'weekly_canceled': weekly_canceled,
+            'trend_label': trend_label,
+            'trend_severity': trend_severity,
         })
 
     return render_template('health.html',

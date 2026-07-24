@@ -74,6 +74,7 @@ VENUES = {
     "bad_astronaut": {
         "name": "Bad Astronaut Brewing Co.",
         "url": "https://www.prekindle.com/events/bad-astronaut-brewing-co",
+        "venue_url": "https://badastronautbeer.com/",
         "city": "Houston",
         "state": "TX",
         "wait_time": 3
@@ -90,6 +91,7 @@ VENUES = {
     "heights_theater": {
         "name": "Heights Theater",
         "url": "https://www.prekindle.com/events/theheights",
+        "venue_url": "https://theheightstheater.com/",
         "city": "Houston",
         "state": "TX",
         "wait_time": 3
@@ -141,6 +143,7 @@ VENUES = {
     "smart_financial": {
         "name": "Smart Financial Centre",
         "url": "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/concert/",
+        "venue_url": "https://smartfinancialcentre.com/events",
         "city": "Sugar Land",
         "state": "TX",
         "wait_time": 6,
@@ -164,7 +167,6 @@ VENUES = {
         "scroll_count": 1,
         "paginated": True,
         "next_page_selector": "#moreshowsbtn",
-        "venue_instruction": "This page covers multiple Texas Improv locations. Only extract events for 'Houston Improv' — ignore Addison Improv, Arlington Improv, LOL San Antonio and any other locations. Set venue to 'Improv Houston' and city to 'Houston' for all extracted events.",
     },
     "riot_comedy": {
         "name": "The Riot Comedy Club",
@@ -198,7 +200,8 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
-        "load_more_id": "loadMoreEvents"
+        "load_more_id": "loadMoreEvents",
+        "unreliable_urls": True
     },
     "nrg_park": {
         "name": "NRG Park",
@@ -283,6 +286,45 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
+        "schedule_group": "afternoon",
+    },
+    "scout_bar": {
+        "name": "Scout Bar",
+        "url": "https://scoutbar.com/calendar/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+        "seetickets": True,
+    },
+    "armadillo_palace": {
+        "name": "Goode Company Armadillo Palace",
+        "aliases": ["Armadillo Palace"],
+        "url": "https://thearmadillopalace.com/live-music/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
+    "moth": {
+        "name": "MOTH Presents",
+        "aliases": ["Moth", "Moth HTX"],
+        "url": "https://www.mothpresents.com/tickets",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
+    "numbers": {
+        "name": "Numbers",
+        "aliases": ["Numbers Nightclub"],
+        "url": "https://numbersnightclub.com/events/month/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "paginated": True,
+        "next_page_selector": "a.tribe-events-c-nav__next",
+        "max_pages": 3,
     },
 }
 
@@ -328,6 +370,41 @@ def strip_opener_clause(name):
     special guest Presley Haile") can otherwise look deceptively similar on raw string
     comparison and trigger a false-positive duplicate match against the wrong event."""
     return re.sub(r'\s+(with|featuring|feat\.?|presents)\s+.*$', '', name, flags=re.IGNORECASE).strip()
+
+def strip_venue_reference(name, venue_name):
+    """Strip a self-reference to the venue's own name from an event title — a leading
+    '<Venue> Presents X' or a 'X Headlines/at [The] <Venue>' mention anywhere else in
+    the string (not anchored to the end, since a modifier like an opener credit can
+    follow it, e.g. "...Single Release Party at Dan Electro's with support from X").
+
+    This is a deterministic backstop for the LLM's TITLE CLEANUP instruction, which has
+    proven unreliable specifically for this rule — confirmed on Riot Comedy Club (~70%
+    of its titles keep the venue reference intact) and a couple of branded Dan Electro's
+    show types. Most venues never embed their own name in a title at all, so this is a
+    no-op for them — see VENUES.md's Open Items for the supporting data.
+    """
+    words = venue_name.split()
+    variants = {venue_name}
+    if venue_name.lower().startswith('the '):
+        variants.add(venue_name[4:])
+    if len(words) >= 2:
+        variants.add(' '.join(words[:2]))
+
+    def flex(v):
+        # Apostrophes are optional so "Dan Electro's" also matches "Dan Electros"
+        return re.escape(v).replace("'", "'?")
+
+    variants_pattern = '|'.join(flex(v) for v in sorted(variants, key=len, reverse=True))
+
+    name = re.sub(
+        rf"\s*[-–—]?\s*(headlines?|at|hosted by)\s+(the\s+)?(?:{variants_pattern})\b(\s+in\s+\w+)?",
+        '', name, flags=re.IGNORECASE
+    )
+    name = re.sub(
+        rf"^(the\s+)?(?:{variants_pattern})\s+presents?\s+",
+        '', name, flags=re.IGNORECASE
+    )
+    return name.strip()
 
 def check_canceled_events(venue_key, scraped_events):
     """Compare scraped events against DB future events, flag missing as canceled.
@@ -445,7 +522,14 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
             print(f"Saved debug HTML to {filename}")
         
         soup = BeautifulSoup(html, 'html.parser')
-        for tag in soup(['script', 'style']):
+        # Strip site chrome (nav menus, header, footer) before extracting text — this
+        # is boilerplate that repeats verbatim across every page of a paginated venue
+        # (see Numbers onboarding, 2026-07-23), diluting the real event content with
+        # noise and, in one confirmed case, causing the LLM to under-extract events
+        # from later pages once combined. Doesn't affect the raw `html` return value
+        # used by custom parsers (parse_white_oak_html, parse_seetickets_html, etc.)
+        # or pagination's next-page-link detection — those re-parse the untouched HTML.
+        for tag in soup(['script', 'style', 'header', 'nav', 'footer']):
             tag.decompose()
         page_text = soup.get_text(separator='\n', strip=True)
 
@@ -562,6 +646,7 @@ def scrape_timely_api(venue_config, mode='daily'):
                     'end_time': None,
                     'doors_time': None,
                     'venue': venue_name,
+                    'venue_url': venue_config.get('venue_url') or venue_config.get('url', ''),
                     'location': None,
                     'city': city,
                     'state': state,
@@ -688,6 +773,7 @@ def parse_seetickets_html(html, venue_config):
             'end_time': None,
             'doors_time': doors_time,
             'venue': venue_name,
+            'venue_url': venue_config.get('venue_url') or venue_config.get('url', ''),
             'location': None,
             'city': city,
             'state': state,
@@ -744,13 +830,20 @@ def ajax_scrape(venue_config, mode='daily'):
     print(f"  ✓ Fetched {offset} events worth of HTML via AJAX")
     events_data = extract_events_with_llm_raw(
         all_html,
-        venue_config['name'],
-        venue_config['city'],
-        venue_config['state'],
+        venue_name=venue_config['name'],
+        venue_url=venue_config.get('venue_url') or venue_config.get('url', ''),
         is_html=True,
         venue_instruction=venue_config.get('venue_instruction')
     )
-    return events_data.get('events', [])
+    events = events_data.get('events', [])
+    for event in events:
+        event['venue_url'] = venue_config.get('venue_url') or venue_config.get('url', '')
+        event['venue'] = venue_config['name']
+        event['city'] = venue_config['city']
+        event['state'] = venue_config['state']
+        if event.get('name'):
+            event['name'] = strip_venue_reference(event['name'], venue_config['name'])
+    return events
 
 def scrape_google_ics(venue_config, mode='daily'):
     """Fetch events from a public Google Calendar ICS feed"""
@@ -969,16 +1062,22 @@ Return ONLY valid JSON with an "events" array."""
     user_prompt = f"Extract events from this page:\n\n{page_text[:char_limit]}"
     return get_llm_response(system_prompt, user_prompt, llm=llm)
 
-def extract_events_with_llm_raw(content, venue_name, city, state, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
+def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
     """Extract events using LLM from text or HTML.
+
+    venue/city/state are deliberately NOT part of the extraction schema — we already
+    know them from config with certainty, so asking the LLM to echo them back only
+    wastes output tokens and risks it drifting on the exact string (dangerous, since
+    save_to_database does exact-string venue matching everywhere). They're set in code
+    after extraction instead, the same way venue_url already is.
 
     Splits and retries on JSON truncation (a high event count can exceed the model's
     output token cap) rather than failing the whole venue outright. _depth guards
     against infinite recursion if a chunk keeps failing for an unrelated reason.
     """
     content_type = "HTML code" if is_html else "text"
-    venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else f'\n- venue: "{venue_name}"'
-    system_prompt = f"""You are an expert at extracting structured event data from venue websites. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
+    venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else ""
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites. The name of this venue is "{venue_name}", and it's website is "{venue_url}". Today's date is {datetime.now().strftime('%Y-%m-%d')}.
 Extract ALL events from the provided {content_type} into a JSON array. For each event:
 
 TITLE CLEANUP (apply before setting name):
@@ -998,9 +1097,6 @@ Fields to extract:
 - start_time: HH:MM format (24-hour) or null
 - end_time: HH:MM format (24-hour) or null
   DO NOT apply any timezone conversion. Keep times exactly as shown.
-- venue: "{venue_name}" (see venue note below if present)
-- city: "{city}"
-- state: "{state}"
 - price: Extract if mentioned, otherwise null
 - ticket_url: Full URL to ticketing page if present, otherwise null
 - event_url: Full URL to the event's own detail page if present (distinct from ticket URL), otherwise null
@@ -1030,8 +1126,8 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
             split_at = mid
         first_half = body[:split_at] + links_suffix
         second_half = body[split_at:] + links_suffix
-        result_a = extract_events_with_llm_raw(first_half, venue_name, city, state, is_html, venue_instruction, llm, _depth + 1)
-        result_b = extract_events_with_llm_raw(second_half, venue_name, city, state, is_html, venue_instruction, llm, _depth + 1)
+        result_a = extract_events_with_llm_raw(first_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
+        result_b = extract_events_with_llm_raw(second_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
         return {'events': result_a.get('events', []) + result_b.get('events', [])}
 
 def parse_white_oak_html(html):
@@ -1396,19 +1492,32 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         venue_instruction = venue.get('venue_instruction', '')
         events_data = extract_events_with_llm_raw(
             page_text[:char_limit],
-            venue['name'],
-            venue['city'],
-            venue['state'],
+            venue_name=venue['name'],
+            venue_url=venue.get('venue_url') or venue.get('url', ''),
             is_html=False,
             venue_instruction=venue_instruction,
             llm=llm
         )
-    
+
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
 
     for event in events:
         event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
+        event['venue'] = venue['name']
+        event['city'] = venue['city']
+        event['state'] = venue['state']
+        if event.get('name'):
+            event['name'] = strip_venue_reference(event['name'], venue['name'])
+        # Some venues' per-event links can't be trusted at all (e.g. Toyota Center's
+        # identical "More Info & Ticket Options" anchor text on every event, which the
+        # LLM can't reliably pair to the right show — confirmed still misattributing
+        # links between neighboring events in live data). Force these to null so the
+        # calendar's fallback chain (ticket_url -> event_url -> venue_url) lands on the
+        # venue's generic events page instead of a wrong specific one.
+        if venue.get('unreliable_urls'):
+            event['ticket_url'] = None
+            event['event_url'] = None
 
     # Weekly mode: check for canceled events
     canceled_count = 0
@@ -1421,10 +1530,25 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     return events, canceled_count
 
-def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False):
-    """Scrape all venues, save, and log stats per venue"""
+def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=None):
+    """Scrape all venues, save, and log stats per venue.
+
+    group filters down to venues tagged with a matching schedule_group (e.g.
+    "afternoon") — lets one Railway cron cover many venues on a shared schedule
+    without a separate cron service per venue. Adding/moving a venue between
+    schedules is then just a config edit, not new infra.
+    """
+    venue_keys = VENUES.keys()
+    if group:
+        venue_keys = [k for k, v in VENUES.items() if v.get('schedule_group') == group]
+        if not venue_keys:
+            groups = sorted({v['schedule_group'] for v in VENUES.values() if v.get('schedule_group')})
+            print(f"✗ No venues tagged with schedule_group '{group}'")
+            print(f"  Available groups: {', '.join(groups) if groups else '(none configured)'}")
+            return []
+
     all_events = []
-    for venue_key in VENUES.keys():
+    for venue_key in venue_keys:
         try:
             events, canceled_count = scrape_venue(venue_key, mode=mode, llm=llm)
             all_events.extend(events)
@@ -1514,29 +1638,30 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 skipped += 1
                 continue
 
-            # URL match: same ticket_url means same event regardless of title/time drift.
-            # Scoped to venue+start_date too — some venues (e.g. a generic storefront link
-            # reused across every show, or a comedian's profile page reused across their
-            # multiple nights) don't have a per-event-unique ticket_url, so a bare URL match
-            # could otherwise silently merge two different dates' events together.
-            # Only fall back to event_url (scoped to venue) when a venue has no ticket_url at all —
-            # some venues' event_url extraction isn't reliably one-to-one with events (can drift by
-            # position across a scrape), so it must not override a venue's real ticket_url signal.
-            if event.get('ticket_url'):
-                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price
+            # URL match: same ticket_url OR same event_url means same event regardless of
+            # title/time drift. Checked as a combined OR so a venue that reports both fields
+            # only needs ONE of them to still match (e.g. a ticket vendor swaps the ticket_url
+            # mid-run but the venue's own event_url page is stable, or vice versa) — requiring
+            # both would silently miss a real match and fall through to a duplicate insert.
+            # ticket_url is scoped to venue+start_date too — some venues (e.g. a generic
+            # storefront link reused across every show, or a comedian's profile page reused
+            # across their own multiple nights) don't have a per-event-unique ticket_url, so a
+            # bare URL match could otherwise silently merge two different dates' events together.
+            # event_url is scoped to venue only (not date) since it's typically a per-event page
+            # rather than a per-date one.
+            if event.get('ticket_url') or event.get('event_url'):
+                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url
                                 FROM events
-                                WHERE ticket_url = {ph} AND venue = {ph} AND start_date = {ph}
+                                WHERE venue = {ph}
                                 AND status NOT IN ('rejected', 'canceled')
+                                AND (
+                                    (ticket_url = {ph} AND start_date = {ph})
+                                    OR event_url = {ph}
+                                )
                                 LIMIT 1''',
-                            (event['ticket_url'], event['venue'], event.get('start_date')))
-                url_match = c.fetchone()
-            elif event.get('event_url'):
-                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price
-                                FROM events
-                                WHERE venue = {ph} AND event_url = {ph}
-                                AND status NOT IN ('rejected', 'canceled')
-                                LIMIT 1''',
-                            (event['venue'], event['event_url']))
+                            (event['venue'],
+                             event.get('ticket_url'), event.get('start_date'),
+                             event.get('event_url')))
                 url_match = c.fetchone()
             else:
                 url_match = None
@@ -1552,7 +1677,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 if url_match_name_similarity < NAME_SIMILARITY_FLOOR:
                     url_match = None
             if url_match:
-                ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price = url_match
+                ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price, ex_ticket_url, ex_event_url = url_match
                 changes = {}
                 if event['name'] != ex_name:
                     changes['name'] = event['name']
@@ -1570,6 +1695,14 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     changes['openers'] = event['openers']
                 if event.get('price') and event.get('price') != ex_price:
                     changes['price'] = event['price']
+                # Refresh whichever URL field drifted — this is the case the OR-matched query
+                # is built for: one field (say event_url) matched and proved identity, while the
+                # other (ticket_url) changed, e.g. a ticket vendor rotated the link. Keep the
+                # stored value current so future scrapes still match on that field too.
+                if event.get('ticket_url') and event.get('ticket_url') != ex_ticket_url:
+                    changes['ticket_url'] = event['ticket_url']
+                if event.get('event_url') and event.get('event_url') != ex_event_url:
+                    changes['event_url'] = event['event_url']
                 if changes:
                     set_clause = ', '.join(f'{k} = {ph}' for k in changes)
                     c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
@@ -1795,6 +1928,8 @@ if __name__ == "__main__":
                         help='Auto-approve events (use with onboard for trusted venues)')
     parser.add_argument('--venue', type=str, default=None,
                         help='Scrape a single venue by key (e.g. white_oak)')
+    parser.add_argument('--group', type=str, default=None,
+                        help="Scrape only venues tagged with this schedule_group (e.g. afternoon). Ignored if --venue is set.")
     parser.add_argument('--llm', choices=['gpt4o', 'gpt4o-mini', 'claude', 'groq'], default='gpt4o-mini',
                         help='LLM provider to use for extraction')
     parser.add_argument('--dry-run', action='store_true',
@@ -1809,6 +1944,19 @@ if __name__ == "__main__":
         print(f"=== Duplicate Detection {'[DRY RUN] ' if args.dry_run else ''}===\n")
         detect_existing_duplicates(dry_run=args.dry_run)
         exit(0)
+
+    # Random delay so cron-triggered scrapes don't hit venue sites at a predictable
+    # fixed time every day (rate-limit avoidance). The afternoon schedule_group gets a
+    # shorter window since it's already anchored to a narrower part of the day than the
+    # main daily/weekly 6am runs. Skipped for dry-run and onboard — both are interactive,
+    # need-it-now runs (checking extraction output, bringing a new venue online) where a
+    # multi-hour wait defeats the point. SKIP_DELAY bypasses it for any other manual run.
+    if not os.environ.get('SKIP_DELAY') and not args.dry_run and args.mode != 'onboard':
+        import random
+        delay_max = 3 * 60 * 60 if args.group == 'afternoon' else 12 * 60 * 60
+        delay = random.randint(0, delay_max)
+        print(f"Sleeping {delay // 3600}h {(delay % 3600) // 60}m before scraping...")
+        time.sleep(delay)
 
     print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
 
@@ -1833,7 +1981,7 @@ if __name__ == "__main__":
                 stats = save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
                 log_scrape_stats(VENUES[args.venue]['name'], args.mode, stats, canceled_count)
     else:
-        all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve)
+        all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve, group=args.group)
         if args.dry_run:
             print(f"\n{'='*60}")
             print(f"DRY RUN — {len(all_events)} events extracted, not saved")

@@ -146,6 +146,8 @@
   .flag.stale { background: rgba(239,68,68,0.15); color: var(--error); }
   .flag.missing-time { background: rgba(245,158,11,0.15); color: var(--warning); }
   .flag.missing-url { background: rgba(245,158,11,0.15); color: var(--warning); }
+  .flag.trend-warning { background: rgba(245,158,11,0.15); color: var(--warning); }
+  .flag.trend-error { background: rgba(239,68,68,0.15); color: var(--error); }
 
   .last-scrape {
     font-size: 10px;
@@ -259,11 +261,12 @@
       {% if v.stale %}<span class="flag stale">Stale &gt;7d</span>{% endif %}
       {% if v.missing_time_pct > 30 %}<span class="flag missing-time">{{ v.missing_time_pct }}% no time</span>{% endif %}
       {% if v.missing_url_pct > 50 %}<span class="flag missing-url">{{ v.missing_url_pct }}% no link</span>{% endif %}
+      {% if v.trend_label %}<span class="flag trend-{{ v.trend_severity }}">{{ v.trend_label }}</span>{% endif %}
     </div>
 
     <div class="last-scrape">Last scrape: <span>{{ v.last_scrape }}</span></div>
 
-    <div class="chart-label">Events scraped per week</div>
+    <div class="chart-label">New events per week</div>
     <div class="bars">
       {% set max_val = v.weekly | max %}
       {% for count in v.weekly %}
