@@ -326,6 +326,14 @@ VENUES = {
         "next_page_selector": "a.tribe-events-c-nav__next",
         "max_pages": 3,
     },
+    "miller_outdoor": {
+        "name": "Miller Outdoor Theatre",
+        "url": "https://www.milleroutdoortheatre.com/performance-list/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
 }
 
 def get_content_hash(content):
@@ -1877,7 +1885,11 @@ def detect_existing_duplicates(dry_run=False):
     print(f"{'='*60}")
 
 def archive_past_events(buffer_days=1):
-    """Move approved past events to past_events table"""
+    """Move past events (of any review status, including never-reviewed pending
+    ones) to the past_events table. pending is included deliberately — an event
+    whose start_date has already passed and was never reviewed still needs to
+    leave the active dashboard, and archiving preserves its status as 'pending'
+    rather than silently deciding it for the reviewer."""
     if not DATABASE_URL:
         print("No DATABASE_URL — skipping archive (local dev)")
         return
@@ -1892,7 +1904,7 @@ def archive_past_events(buffer_days=1):
                  created_at, approved_at, event_type, visible, sold_out, date_changed,
                  openers, event_url
                  FROM events
-                 WHERE status IN ('approved', 'possible_duplicate', 'rejected', 'canceled') AND start_date < %s''', (cutoff,))
+                 WHERE status IN ('approved', 'possible_duplicate', 'rejected', 'canceled', 'pending') AND start_date < %s''', (cutoff,))
     rows = c.fetchall()
     archived_at = datetime.now().isoformat()
     archived = 0
@@ -1908,7 +1920,7 @@ def archive_past_events(buffer_days=1):
                       (row[1], row[2], row[3], row[4], row[5], row[6], row[7],
                        row[8], row[9], row[10], row[11], row[12],
                        row[13], row[14], row[15], row[16], row[17], row[18], row[19],
-                       row[20], row[21], archived_at, row[22], row[23], row[24],
+                       row[20], archived_at, row[21], row[22], row[23], row[24],
                        row[25], row[26]))
             c.execute('DELETE FROM events WHERE id = %s', (row[0],))
             archived += 1

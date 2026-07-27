@@ -116,7 +116,16 @@ smart_financial     # Smart Financial Centre
 improv_tx           # Improv Houston (paginated, filters Houston-only from TX page)
 riot_comedy         # The Riot Comedy Club
 bayou_music_center  # Bayou Music Center
+secret_group        # The Secret Group (comedy/music, EaDo)
+hotel_lucine        # Hotel Lucine (Galveston)
+echoes_htx          # Echoes (Montrose, site posts same-day ephemeral events — location on-site TBD, under active observation)
+scout_bar           # Scout Bar
+armadillo_palace    # Goode Company Armadillo Palace
+moth                # MOTH Presents
+numbers             # Numbers (Montrose nightclub)
+miller_outdoor      # Miller Outdoor Theatre (own site — previously only a byproduct of the city ICS feed)
 ```
+See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes per venue.
 
 ---
 
@@ -161,6 +170,7 @@ GET  /debug               # Debug info
 - [ ] Multi-night event expansion for Improv (e.g. "Apr 17-18" → two events)
 - [ ] Toyota Center needs a dedicated HTML parser (like White Oak's) — every event's ticket button renders identical anchor text ("More Info & Ticket Options") with no distinguishing per-event label, so the LLM can't reliably match hrefs to events from the flattened page text + link list. This causes a systematic off-by-one misattribution of `ticket_url`/`event_url` between neighboring events (confirmed both in fresh scrapes and in historical data — e.g. two different past events shared an identical AXS ticket link). DB is intentionally left empty for this venue until fixed rather than serve wrong ticket links.
 - [ ] Review the city-calendar-sourced venues (`houcalendar`, `houston_city_calendar`) for cleanup — large unreviewed pending backlogs (e.g. Houston Museum of Natural Science, Sabine Street Studios, City Hall each in the 70-100 pending range). Focus first on parks with performing-arts stages (Miller Outdoor Theatre, Memorial Park, etc.) since those are the most likely to have real music/performing-arts events worth surfacing on the public calendar, versus generic city/civic listings.
+- [ ] Echoes HTX (`echoes_htx`) has never captured a single real event since onboarding (confirmed 0 rows, ever, in both `events` and `past_events` as of 2026-07-26). The `/event-calendar` page's Wix calendar widget (`calendar.boomte.ch`, a cross-origin iframe — `driver.page_source` never sees inside one, which is why the content-hash check was silently reporting "no changes" every run) is confirmed genuinely empty, not just unreachable: checked both its Month and Agenda views directly and its underlying API (`calendar.apiboomtech.com/api/published_calendar`) returns 0 future events. So this isn't a scraping-technique bug — the venue's real event announcements live somewhere else on their site as same-day, short-lived posts (confirmed: a real event was visible on-site earlier 2026-07-26 and gone by the next check). Facebook is ruled out as a source. Plan: manually check the site daily this week to find where on-site the posts appear and how long they stay up, before designing any automated approach. Until then, the afternoon `schedule_group` cron scraping the `/event-calendar` page is a harmless no-op.
 
 ### Architecture / Scale
 - [ ] Venues table — migrate VENUES dict from scraper to DB

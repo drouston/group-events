@@ -483,10 +483,14 @@
             el.innerHTML = events.map(e => {
                 const d = formatDate(e.start_date);
                 const t = formatTime(e.start_time);
+                const link = e.ticket_url || e.event_url || e.venue_url;
+                const name = link
+                    ? `<a href="${link}" target="_blank" class="event-name-link">${e.name}</a>`
+                    : e.name;
                 return `
                     <div class="highlight-event">
                         <div>
-                            <div class="highlight-event-name">${e.name}</div>
+                            <div class="highlight-event-name">${name}</div>
                             <div class="highlight-event-meta">${e.venue} · ${d.short}${t ? ', ' + t : ''}</div>
                         </div>
                         ${showType ? `<span class="highlight-event-chip">${typeChip(e)}</span>` : ''}
