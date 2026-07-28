@@ -494,12 +494,9 @@ def check_canceled_events(venue_key, scraped_events):
         return False
 
     def url_match(db_ticket_url, db_event_url):
-        # Cross-field as well as same-field, matching save_to_database's url_match —
-        # the LLM doesn't reliably classify the same link as ticket_url vs event_url
-        # between separate scrapes of the same show (confirmed at House of Blues).
-        if db_ticket_url and (db_ticket_url in scraped_ticket_urls or db_ticket_url in scraped_event_urls):
+        if db_ticket_url and db_ticket_url in scraped_ticket_urls:
             return True
-        if db_event_url and (db_event_url in scraped_ticket_urls or db_event_url in scraped_event_urls):
+        if db_event_url and db_event_url in scraped_event_urls:
             return True
         return False
 
@@ -1745,22 +1742,16 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 continue
 
             # URL match: same ticket_url OR same event_url means same event regardless of
-            # title/time drift. Checked cross-field as well as same-field — confirmed on House
-            # of Blues that the LLM doesn't consistently classify the identical Ticketmaster link
-            # as ticket_url vs event_url between separate scrapes of the same show, so same-field-
-            # only comparison was missing the match entirely and falling through to a duplicate
-            # insert (caught afterwards only by fuzzy name matching, noisily). Checking both fields
-            # against both stored fields also covers the original intent: a venue that reports both
-            # fields only needs ONE of them to still match (e.g. a ticket vendor swaps the
-            # ticket_url mid-run but the venue's own event_url page is stable, or vice versa) —
-            # requiring both would silently miss a real match and fall through to a duplicate insert.
-            # Any comparison involving a ticket_url value (on either side) is scoped to venue+
-            # start_date too — some venues (e.g. a generic storefront link reused across every
-            # show, or a comedian's profile page reused across their own multiple nights) don't
-            # have a per-event-unique ticket_url, so a bare match could otherwise silently merge
-            # two different dates' events together. event_url-to-event_url is the only comparison
-            # not date-scoped, since it's treated as inherently a per-event page rather than a
-            # generic per-date one.
+            # title/time drift. Checked as a combined OR so a venue that reports both fields
+            # only needs ONE of them to still match (e.g. a ticket vendor swaps the ticket_url
+            # mid-run but the venue's own event_url page is stable, or vice versa) — requiring
+            # both would silently miss a real match and fall through to a duplicate insert.
+            # ticket_url is scoped to venue+start_date too — some venues (e.g. a generic
+            # storefront link reused across every show, or a comedian's profile page reused
+            # across their own multiple nights) don't have a per-event-unique ticket_url, so a
+            # bare URL match could otherwise silently merge two different dates' events together.
+            # event_url is scoped to venue only (not date) since it's typically a per-event page
+            # rather than a per-date one.
             if event.get('ticket_url') or event.get('event_url'):
                 c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url
                                 FROM events
@@ -1769,15 +1760,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
                                 AND (
                                     (ticket_url = {ph} AND start_date = {ph})
                                     OR event_url = {ph}
-                                    OR (ticket_url = {ph} AND start_date = {ph})
-                                    OR (event_url = {ph} AND start_date = {ph})
                                 )
                                 LIMIT 1''',
                             (event['venue'],
                              event.get('ticket_url'), event.get('start_date'),
-                             event.get('event_url'),
-                             event.get('event_url'), event.get('start_date'),
-                             event.get('ticket_url'), event.get('start_date')))
+                             event.get('event_url')))
                 url_match = c.fetchone()
             else:
                 url_match = None
