@@ -25,10 +25,22 @@ def get_db_connection():
         # SQLite connection (local development)
         return sqlite3.connect('events.db')
 
-from og_image import event_card_bp, ensure_stats_table, init as init_og_image
+def get_event_by_id(event_id):
+    """Fetch a single event by id as a dict, or None if not found."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute('SELECT * FROM events WHERE id = %s', (event_id,))
+    else:
+        c.execute('SELECT * FROM events WHERE id = ?', (event_id,))
+    row = c.fetchone()
+    event = dict(zip([col[0] for col in c.description], row)) if row else None
+    conn.close()
+    return event
+
+from og_image import event_card_bp, init as init_og_image
 init_og_image(get_db_connection, get_event_by_id)
 app.register_blueprint(event_card_bp)
-ensure_stats_table()
 
 def init_db():
     """Initialize database tables"""

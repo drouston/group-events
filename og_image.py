@@ -77,7 +77,11 @@ def _get_conn():
     return _get_db_connection()
 
 
+_stats_table_ready = False
+
+
 def ensure_stats_table():
+    global _stats_table_ready
     conn = _get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -89,9 +93,13 @@ def ensure_stats_table():
     conn.commit()
     cur.close()
     conn.close()
+    _stats_table_ready = True
 
 
 def increment_and_get_hits():
+    if not _stats_table_ready:
+        ensure_stats_table()
+
     conn = _get_conn()
     cur = conn.cursor()
     is_sqlite = isinstance(conn, sqlite3.Connection)
@@ -344,7 +352,7 @@ def share_redirect(event_id):
     return render_template(
         "share_redirect.html",
         title=event.get("name", "Houston Event"),
-        description=f"{event.get('venue', '')} -- {event.get('date', '')}",
+        description=f"{event.get('venue', '')} -- {event.get('start_date', '')}",
         image_url=url_for("event_card.event_card_image", event_id=event_id, _external=True),
         canonical_url=url_for("event_card.share_redirect", event_id=event_id, _external=True),
         redirect_url=event["ticket_url"],
