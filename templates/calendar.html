@@ -485,7 +485,7 @@
                 const t = formatTime(e.start_time);
                 const link = e.ticket_url || e.event_url || e.venue_url;
                 const name = link
-                    ? `<a href="${link}" target="_blank" class="event-name-link">${e.name}</a>`
+                    ? `<a href="/e/${e.id}" target="_blank" class="event-name-link">${e.name}</a>`
                     : e.name;
                 return `
                     <div class="highlight-event">
@@ -542,7 +542,7 @@
             if (e.sold_out) {
                 const link = e.ticket_url || e.event_url || e.venue_url;
                 return link
-                    ? `<a href="${link}" target="_blank" class="sold-out-link">Sold out</a>`
+                    ? `<a href="/e/${e.id}" target="_blank" class="sold-out-link">Sold out</a>`
                     : `<span class="sold-out-link">Sold out</span>`;
             }
             return e.price || '';
@@ -551,7 +551,7 @@
         function nameCell(e) {
             const link = e.ticket_url || e.event_url || e.venue_url;
             const title = link
-                ? `<a href="${link}" target="_blank" class="event-name-link">${e.name}</a>`
+                ? `<a href="/e/${e.id}" target="_blank" class="event-name-link">${e.name}</a>`
                 : e.name;
             return e.openers
                 ? `${title}<div class="col-subtext">w/ ${e.openers}</div>`

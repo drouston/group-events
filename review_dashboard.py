@@ -501,7 +501,7 @@ def calendar():
     ph = '%s' if DATABASE_URL else '?'
     vis = 'true' if DATABASE_URL else '1'
 
-    c.execute(f'''SELECT name, start_date, end_date, doors_time, start_time, end_time,
+    c.execute(f'''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                          multi_day, venue, location, city,
                          price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url
                          FROM events
@@ -512,24 +512,25 @@ def calendar():
     events = []
     for row in c.fetchall():
         events.append({
-            'name': row[0],
-            'start_date': row[1],
-            'end_date': row[2],
-            'doors_time': row[3],
-            'start_time': row[4],
-            'end_time': row[5],
-            'multi_day': row[6],
-            'venue': row[7],
-            'location': row[8],
-            'city': row[9],
-            'price': row[10],
-            'genre': row[11],
-            'description': row[12],
-            'event_type': row[13] or 'other',
-            'sold_out': row[14] if row[14] is not None else False,
-            'event_url': row[15],
-            'ticket_url': row[16],
-            'venue_url': row[17]
+            'id': row[0],
+            'name': row[1],
+            'start_date': row[2],
+            'end_date': row[3],
+            'doors_time': row[4],
+            'start_time': row[5],
+            'end_time': row[6],
+            'multi_day': row[7],
+            'venue': row[8],
+            'location': row[9],
+            'city': row[10],
+            'price': row[11],
+            'genre': row[12],
+            'description': row[13],
+            'event_type': row[14] or 'other',
+            'sold_out': row[15] if row[15] is not None else False,
+            'event_url': row[16],
+            'ticket_url': row[17],
+            'venue_url': row[18]
         })
     conn.close()
 
@@ -899,106 +900,6 @@ def get_genres():
     genres = [row[0] for row in c.fetchall()]
     conn.close()
     return jsonify({'genres': genres})
-
-def calendar():
-    conn = get_db_connection()
-    c = conn.cursor()
-    today_date = datetime.now(CENTRAL).date()
-    today = today_date.isoformat()
-    ph = '%s' if DATABASE_URL else '?'
-    vis = 'true' if DATABASE_URL else '1'
-
-    c.execute(f'''SELECT name, start_date, end_date, doors_time, start_time, end_time,
-                         multi_day, venue, location, city,
-                         price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url
-                         FROM events
-                         WHERE status = 'approved'
-                         AND visible = {vis}
-                         AND start_date >= {ph}
-                         ORDER BY start_date ASC''', (today,))
-    events = []
-    for row in c.fetchall():
-        events.append({
-            'name': row[0],
-            'start_date': row[1],
-            'end_date': row[2],
-            'doors_time': row[3],
-            'start_time': row[4],
-            'end_time': row[5],
-            'multi_day': row[6],
-            'venue': row[7],
-            'location': row[8],
-            'city': row[9],
-            'price': row[10],
-            'genre': row[11],
-            'description': row[12],
-            'event_type': row[13] or 'other',
-            'sold_out': row[14] if row[14] is not None else False,
-            'event_url': row[15],
-            'ticket_url': row[16],
-            'venue_url': row[17]
-        })
-    conn.close()
-
-    venues = sorted(set(e['venue'] for e in events if e['venue']))
-    genres = sorted(set(e['genre'] for e in events if e['genre']))
-
-    # --- Type counts for summary cards ---
-    type_counts = {}
-    for e in events:
-        et = e['event_type']
-        type_counts[et] = type_counts.get(et, 0) + 1
-
-    # Fixed card order; festival may be 0 until classification catches up
-    card_types = [
-        ('music', 'Music'),
-        ('comedy', 'Comedy'),
-        ('sports', 'Sports'),
-        ('performing_arts', 'Performing Arts'),
-        ('festival', 'Festivals'),
-    ]
-    type_summary = [
-        {'type': key, 'label': label, 'count': type_counts.get(key, 0)}
-        for key, label in card_types
-    ]
-
-    # --- This week (next 7 days) music highlights, max 5 ---
-    week_end = (today_date + timedelta(days=7)).isoformat()
-    this_week = [
-        e for e in events
-        if e['event_type'] == 'music' and today <= e['start_date'] <= week_end
-    ][:5]
-
-    # --- This weekend (Thu-Sun) music highlights, max 5 ---
-    # Find the current/upcoming Thu-Sun window.
-    # Mon=0 ... Sun=6. Thursday=3.
-    weekday = today_date.weekday()
-    days_since_thursday = (weekday - 3) % 7
-    this_thursday = today_date - timedelta(days=days_since_thursday)
-    this_sunday = this_thursday + timedelta(days=3)
-
-    if today_date > this_sunday:
-        # past this weekend's window already (shouldn't normally happen
-        # given days_since_thursday math, but guards edge cases)
-        this_thursday += timedelta(days=7)
-        this_sunday += timedelta(days=7)
-
-    weekend_start = this_thursday.isoformat()
-    weekend_end = this_sunday.isoformat()
-    this_weekend = [
-        e for e in events
-        if e['event_type'] == 'music' and weekend_start <= e['start_date'] <= weekend_end
-    ][:5]
-
-    return render_template(
-        'newcalendar.html',
-        events=events,
-        venues=venues,
-        genres=genres,
-        type_summary=type_summary,
-        this_week=this_week,
-        this_weekend=this_weekend,
-    )
 
 try:
     from universal_scraper import VENUES as _SCRAPER_VENUES

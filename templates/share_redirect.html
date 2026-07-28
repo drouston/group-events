@@ -17,11 +17,44 @@
   <meta name="twitter:description" content="{{ description }}">
   <meta name="twitter:image" content="{{ image_url }}">
 
-  <meta http-equiv="refresh" content="0;url={{ redirect_url }}">
-  <script>window.location.replace("{{ redirect_url }}");</script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1a0a3d;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      text-align: center;
+    }
+    .card {
+      padding: 32px;
+    }
+    h1 {
+      color: #fff;
+      font-size: 1.3em;
+      margin: 0 0 20px;
+    }
+    a.btn {
+      display: inline-block;
+      padding: 14px 28px;
+      background: #ffee00;
+      color: #1a0a3d;
+      font-weight: bold;
+      text-decoration: none;
+      border-radius: 6px;
+    }
+  </style>
 </head>
 <body>
-  <!-- Fallback for the rare case JS and meta-refresh both fail to fire -->
-  <p>Redirecting to <a href="{{ redirect_url }}">{{ title }}</a>&hellip;</p>
+  <!-- No auto-redirect: link-preview bots (esp. iMessage's LinkPresentation, which
+       renders this page in a real WebKit view and runs JS) would otherwise navigate
+       away before/while grabbing the OG tags, showing the ticket site's preview
+       instead of ours. Tap-through keeps the custom card reliable. -->
+  <div class="card">
+    <h1>{{ title }}</h1>
+    <a class="btn" href="{{ redirect_url }}">Get Tickets &raquo;</a>
+  </div>
 </body>
 </html>
