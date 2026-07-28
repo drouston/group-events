@@ -669,7 +669,7 @@
             dates.forEach(date => {
                 const d = formatDate(date);
                 const dayEvents = grouped[date];
-                html += `<tr class="date-row"><td colspan="4">${d.full} · ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}</td></tr>`;
+                html += `<tr class="date-row"><td colspan="5">${d.full} · ${dayEvents.length} event${dayEvents.length !== 1 ? 's' : ''}</td></tr>`;
                 html += dayEvents.map(e => renderEventRow(e, false)).join('');
             });
             tbody.innerHTML = html;
