@@ -48,13 +48,19 @@
   </style>
 </head>
 <body>
-  <!-- No auto-redirect: link-preview bots (esp. iMessage's LinkPresentation, which
-       renders this page in a real WebKit view and runs JS) would otherwise navigate
-       away before/while grabbing the OG tags, showing the ticket site's preview
-       instead of ours. Tap-through keeps the custom card reliable. -->
+  <!-- Redirect is delayed rather than instant: link-preview bots (esp. iMessage's
+       LinkPresentation, which can render this page in a real WebKit view and run
+       JS) grab their OG-tag snapshot quickly and don't hang around for a timer, so
+       a short delay keeps their preview showing our card. A real page-open still
+       waits out the same short delay, then continues on automatically. -->
   <div class="card">
     <h1>{{ title }}</h1>
     <a class="btn" href="{{ redirect_url }}">Get Tickets &raquo;</a>
   </div>
+  <script>
+    setTimeout(function () {
+      window.location.replace("{{ redirect_url }}");
+    }, 600);
+  </script>
 </body>
 </html>
