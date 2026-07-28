@@ -51,13 +51,30 @@ def _s(v):
 
 # ---------------------------------------------------------------------------
 # Hit counter -- one row in site_stats, works with sqlite3 (local) or
-# psycopg2 (Railway Postgres). Adjust _get_conn() to match your existing
-# get_db_connection() helper.
+# psycopg2 (Railway Postgres).
+#
+# Rather than importing back from review_dashboard.py (which causes a
+# circular-import loop when review_dashboard.py is run directly as __main__),
+# review_dashboard.py hands us its existing get_db_connection and
+# get_event_by_id functions via init(). Call init() once, right after
+# both functions are defined, before registering the blueprint.
 # ---------------------------------------------------------------------------
 
+_get_db_connection = None
+_get_event_by_id = None
+
+
+def init(get_db_connection_fn, get_event_by_id_fn):
+    global _get_db_connection, _get_event_by_id
+    _get_db_connection = get_db_connection_fn
+    _get_event_by_id = get_event_by_id_fn
+
+
 def _get_conn():
-    from review_dashboard import get_db_connection  # reuse existing helper
-    return get_db_connection()
+    if _get_db_connection is None:
+        raise RuntimeError("og_image.init() must be called before use -- "
+                            "see review_dashboard.py wiring")
+    return _get_db_connection()
 
 
 def ensure_stats_table():
@@ -307,9 +324,7 @@ def pick_template(event_id):
 
 @event_card_bp.route("/e/<int:event_id>/card.png")
 def event_card_image(event_id):
-    from review_dashboard import get_event_by_id
-
-    event = get_event_by_id(event_id) or {}
+    event = _get_event_by_id(event_id) or {}
     hits = increment_and_get_hits()
     template = pick_template(event_id)
     img = RENDERERS[template](event, hits)
@@ -322,9 +337,7 @@ def event_card_image(event_id):
 
 @event_card_bp.route("/e/<int:event_id>")
 def share_redirect(event_id):
-    from review_dashboard import get_event_by_id
-
-    event = get_event_by_id(event_id)
+    event = _get_event_by_id(event_id)
     if not event or not event.get("ticket_url"):
         return redirect("/calendar")
 

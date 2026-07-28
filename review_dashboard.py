@@ -5,13 +5,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
-from og_image import event_card_bp, ensure_stats_table
 
 CENTRAL = ZoneInfo('America/Chicago')
 
 app = Flask(__name__)
-app.register_blueprint(event_card_bp)
-ensure_stats_table()
 
 # Database configuration - use PostgreSQL if DATABASE_URL exists (production), else SQLite (local)
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -27,6 +24,11 @@ def get_db_connection():
     else:
         # SQLite connection (local development)
         return sqlite3.connect('events.db')
+
+from og_image import event_card_bp, ensure_stats_table, init as init_og_image
+init_og_image(get_db_connection, get_event_by_id)
+app.register_blueprint(event_card_bp)
+ensure_stats_table()
 
 def init_db():
     """Initialize database tables"""
