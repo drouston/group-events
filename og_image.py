@@ -22,12 +22,23 @@ import io
 import os
 import math
 import sqlite3
+from datetime import datetime
 
 from flask import Blueprint, send_file, render_template, url_for, redirect
 
 from PIL import Image, ImageDraw, ImageFont
 
 event_card_bp = Blueprint("event_card", __name__)
+
+
+def _format_share_date(start_date):
+    """start_date is stored as 'YYYY-MM-DD' -- render as 'M/DD' for previews."""
+    if not start_date:
+        return ""
+    try:
+        return datetime.strptime(start_date, "%Y-%m-%d").strftime("%-m/%d")
+    except ValueError:
+        return start_date
 
 # Card is rendered at 2x the 680x357 design canvas -> 1200x630 (twitter/OG standard-ish)
 W, H = 1200, 630
@@ -349,9 +360,14 @@ def share_redirect(event_id):
     if not event or not event.get("ticket_url"):
         return redirect("/calendar")
 
+    name = event.get("name", "Houston Event")
+    date_str = _format_share_date(event.get("start_date"))
+    venue = event.get("venue", "")
+    title = f"{name} - {date_str} @ {venue}" if (date_str or venue) else name
+
     return render_template(
         "share_redirect.html",
-        title=event.get("name", "Houston Event"),
+        title=title,
         description=f"{event.get('venue', '')} -- {event.get('start_date', '')}",
         image_url=url_for("event_card.event_card_image", event_id=event_id, _external=True),
         canonical_url=url_for("event_card.share_redirect", event_id=event_id, _external=True),

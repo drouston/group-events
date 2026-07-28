@@ -416,28 +416,63 @@ def strip_venue_reference(name, venue_name):
 
 def check_canceled_events(venue_key, scraped_events):
     """Compare scraped events against DB future events, flag missing as canceled.
+
     A shared ticket_url/event_url counts as still-found regardless of name drift —
     checked first since it's a stronger identity signal than fuzzy name matching.
     Falls back to fuzzy name matching (to tolerate minor title drift) when a DB
-    event has no URL, or its URL isn't present in today's scrape."""
+    event has no URL, or its URL isn't present in today's scrape.
+
+    Three layers of protection against a bad scrape masquerading as real
+    cancellations (a broken pagination, an incomplete page render, or a flaky API
+    response all look identical to "the venue canceled everything" from the
+    outside — count alone can't tell them apart, so this doesn't try to guess the
+    cause and instead limits the damage any single run can do):
+
+    1. An empty scrape is skipped entirely rather than treated as "0 events found,
+       cancel everything" — a real venue essentially never drops to zero upcoming
+       shows between runs.
+    2. Missing events are only ever *tentatively* flagged (cancel_flagged_at set,
+       status untouched) on their first missing observation. Only a SECOND
+       consecutive miss confirms the cancellation. A one-off scrape glitch that
+       misses an event only sets/leaves a flag; it takes the same event going
+       missing on two different runs in a row to actually cancel it.
+    3. Even tentative flagging is capped per run: if the number of newly-missing
+       events is large relative to the venue's active schedule, the whole run is
+       treated as unreliable and skipped (logged, not applied) — this catches a
+       deterministic partial failure (e.g. pagination that reliably stops after
+       page 1) that would otherwise "confirm" the same wrong cancellations twice.
+
+    Events that reappear (a flagged-but-not-yet-canceled event found again, or an
+    already-canceled event found again via a strong URL match) are reactivated —
+    self-healing rather than requiring a manual undo.
+    """
+    venue_name = VENUES[venue_key]['name']
+
+    if not scraped_events:
+        # Almost always a fetch failure (network hiccup, API error, empty page
+        # load) rather than a venue genuinely having zero upcoming shows.
+        print(f"  ↷ Skipping cancellation check for {venue_name} — scrape returned 0 events")
+        return 0
+
     conn = get_db_connection()
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
-    venue_name = VENUES[venue_key]['name']
     today = datetime.now().strftime('%Y-%m-%d')
-    c.execute(f'''SELECT id, name, start_date, ticket_url, event_url FROM events
+    now_iso = datetime.now().isoformat()
+    c.execute(f'''SELECT id, name, start_date, ticket_url, event_url, status, cancel_flagged_at
+                 FROM events
                  WHERE venue = {ph} AND start_date >= {ph}
-                 AND status IN ('approved', 'pending')''',
+                 AND status IN ('approved', 'pending', 'canceled')''',
               (venue_name, today))
     db_events = c.fetchall()
 
-    # Build scraped names grouped by date for efficient same-day comparison
+    # Build scraped lookups for efficient comparison
     scraped_by_date = {}
     scraped_ticket_urls = set()
     scraped_event_urls = set()
     for e in scraped_events:
         date = e.get('start_date')
-        if date:
+        if date and e.get('name'):
             scraped_by_date.setdefault(date, []).append(e['name'].strip().lower())
         if e.get('ticket_url'):
             scraped_ticket_urls.add(e['ticket_url'])
@@ -458,21 +493,69 @@ def check_canceled_events(venue_key, scraped_events):
                 return True
         return False
 
-    canceled_count = 0
-    for db_id, db_name, db_date, db_ticket_url, db_event_url in db_events:
+    def url_match(db_ticket_url, db_event_url):
         if db_ticket_url and db_ticket_url in scraped_ticket_urls:
-            continue
+            return True
         if db_event_url and db_event_url in scraped_event_urls:
-            continue
-        same_day = scraped_by_date.get(db_date, [])
-        if not fuzzy_match(db_name, same_day):
-            c.execute(f'''UPDATE events SET status = 'canceled'
-                         WHERE id = {ph}''', (db_id,))
-            canceled_count += 1
-            print(f"  ⚠ Flagged as canceled: {db_name} on {db_date}")
+            return True
+        return False
+
+    active = [row for row in db_events if row[5] != 'canceled']
+    already_canceled = [row for row in db_events if row[5] == 'canceled']
+
+    reappeared = []   # active rows found again -> clear any tentative flag
+    missing = []      # active rows not found -> candidates for flag/confirm
+    for db_id, db_name, db_date, db_ticket_url, db_event_url, status, flagged_at in active:
+        found = url_match(db_ticket_url, db_event_url) or fuzzy_match(db_name, scraped_by_date.get(db_date, []))
+        if found:
+            if flagged_at:
+                reappeared.append((db_id, db_name))
+        else:
+            missing.append((db_id, db_name, db_date, flagged_at))
+
+    # Layer 3: cap how much of the active schedule can be newly flagged/confirmed
+    # in one run. Applies only to the destructive side (flagging, confirming) —
+    # clearing flags and reactivating are always safe to apply regardless.
+    CAP_RATIO = 0.3
+    MIN_CAP = 3
+    cap = max(MIN_CAP, int(len(active) * CAP_RATIO))
+    over_cap = len(missing) > cap
+
+    for db_id, db_name in reappeared:
+        c.execute(f"UPDATE events SET cancel_flagged_at = NULL WHERE id = {ph}", (db_id,))
+        print(f"  ↺ No longer missing, clearing flag: {db_name}")
+
+    # Reactivate already-canceled events found again. Same match rule (URL or
+    # fuzzy name) as everything above — the fuzzy match that would have kept an
+    # event from being canceled in the first place is equally trustworthy for
+    # reversing it, so there's no reason to hold reactivation to a stricter bar.
+    reactivated_count = 0
+    for db_id, db_name, db_date, db_ticket_url, db_event_url, status, flagged_at in already_canceled:
+        if url_match(db_ticket_url, db_event_url) or fuzzy_match(db_name, scraped_by_date.get(db_date, [])):
+            c.execute(f"UPDATE events SET status = 'pending', cancel_flagged_at = NULL WHERE id = {ph}", (db_id,))
+            reactivated_count += 1
+            print(f"  ↺ Reappeared, reactivated as pending: {db_name} on {db_date}")
+
+    canceled_count = 0
+    if over_cap:
+        print(f"  ⚠ {len(missing)} events missing at once for {venue_name} "
+              f"(cap {cap} of {len(active)} active) — treating as an unreliable "
+              f"scrape and skipping cancellation for this run:")
+        for _, db_name, db_date, _ in missing:
+            print(f"      - {db_name} on {db_date}")
+    else:
+        for db_id, db_name, db_date, flagged_at in missing:
+            if flagged_at:
+                c.execute(f"UPDATE events SET status = 'canceled', cancel_flagged_at = NULL WHERE id = {ph}", (db_id,))
+                canceled_count += 1
+                print(f"  ⚠ Confirmed canceled (missing 2 scrapes in a row): {db_name} on {db_date}")
+            else:
+                c.execute(f"UPDATE events SET cancel_flagged_at = {ph} WHERE id = {ph}", (now_iso, db_id))
+                print(f"  ⚑ Flagged as cancellation candidate (will confirm next scrape): {db_name} on {db_date}")
+
     conn.commit()
     conn.close()
-    print(f"  {canceled_count} events flagged as canceled for {venue_name}")
+    print(f"  {canceled_count} events confirmed canceled, {reactivated_count} reactivated for {venue_name}")
     return canceled_count
 
 def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None, pagination_sentinel=None):
@@ -1408,23 +1491,34 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     print(f"Scraping: {venue['name']} [{mode} mode]")
     print(f"{'='*60}")
 
+    # These four branches bypass the LLM/hash-check path below entirely, and each
+    # re-fetches live data on every single run regardless of mode (no hash-skip to
+    # gate them). check_canceled_events is cheap (a DB comparison, no LLM call), so
+    # unlike the hash-checked path below there's no reason to gate it on weekly mode
+    # here — run it every time so a canceled/replaced show doesn't sit undetected
+    # until someone notices.
+
     # Timely API venues — bypass Selenium + LLM entirely
     if venue.get('timely_calendar_id'):
-        return scrape_timely_api(venue, mode), 0
+        events = scrape_timely_api(venue, mode)
+        return events, check_canceled_events(venue_key, events)
 
     # SeeTickets venues — scrape with Selenium but parse with custom HTML parser, no LLM
     if venue.get('seetickets'):
         _, html = scrape_page(venue['url'], wait_time=venue.get('wait_time', 3),
                             scroll_count=venue.get('scroll_count', 1),load_more_id=venue.get('load_more_id'))
-        return parse_seetickets_html(html, venue), 0
+        events = parse_seetickets_html(html, venue)
+        return events, check_canceled_events(venue_key, events)
 
     # AJAX venues — fetch all paginated HTML fragments and parse with LLM in one go
     if venue.get('ajax_url'):
-        return ajax_scrape(venue, mode), 0
+        events = ajax_scrape(venue, mode)
+        return events, check_canceled_events(venue_key, events)
 
     # Google Calendar ICS feed — bypass Selenium + LLM entirely
     if venue.get('ical_url'):
-        return scrape_google_ics(venue, mode)
+        events = scrape_google_ics(venue, mode)
+        return events, check_canceled_events(venue_key, events)
 
     debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
@@ -1527,10 +1621,11 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             event['ticket_url'] = None
             event['event_url'] = None
 
-    # Weekly mode: check for canceled events
-    canceled_count = 0
-    if mode == 'weekly':
-        canceled_count = check_canceled_events(venue_key, events)
+    # A hash change means the page's content moved for one of three reasons: a new
+    # event, a changed event, or a canceled event — so whenever we've actually
+    # processed changed content (any mode, not just weekly), check for all three.
+    # The hash-check above already skipped this entirely if nothing changed.
+    canceled_count = check_canceled_events(venue_key, events)
 
     # Update stored hash
     if not args.dry_run:

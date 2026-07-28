@@ -76,8 +76,9 @@ def init_db():
                       sold_out BOOLEAN DEFAULT FALSE,
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
-                      duplicate_of_id INTEGER)''')
-        
+                      duplicate_of_id INTEGER,
+                      cancel_flagged_at TEXT)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id SERIAL PRIMARY KEY,
                       name TEXT,
@@ -146,8 +147,9 @@ def init_db():
                       sold_out BOOLEAN DEFAULT FALSE,
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
-                      duplicate_of_id INTEGER)''')
-        
+                      duplicate_of_id INTEGER,
+                      cancel_flagged_at TEXT)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       name TEXT,
