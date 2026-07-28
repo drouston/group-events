@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }}</title>
+
+  <meta property="og:title" content="{{ title }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:image" content="{{ image_url }}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:url" content="{{ canonical_url }}">
+  <meta property="og:type" content="website">
+
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ title }}">
+  <meta name="twitter:description" content="{{ description }}">
+  <meta name="twitter:image" content="{{ image_url }}">
+
+  <meta http-equiv="refresh" content="0;url={{ redirect_url }}">
+  <script>window.location.replace("{{ redirect_url }}");</script>
+</head>
+<body>
+  <!-- Fallback for the rare case JS and meta-refresh both fail to fire -->
+  <p>Redirecting to <a href="{{ redirect_url }}">{{ title }}</a>&hellip;</p>
+</body>
+</html>
