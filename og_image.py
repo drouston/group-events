@@ -357,7 +357,13 @@ def event_card_image(event_id):
 @event_card_bp.route("/e/<int:event_id>")
 def share_redirect(event_id):
     event = _get_event_by_id(event_id)
-    if not event or not event.get("ticket_url"):
+    # Same fallback chain the calendar itself uses to decide whether an event's title
+    # is clickable at all (ticket_url || event_url || venue_url) -- this route only
+    # checked ticket_url, so any event carrying just an event_url (McGonigel's never
+    # populates ticket_url at all; Dan Electro's, Continental Club/Big Top mostly don't
+    # either) silently redirected to /calendar instead of the real event page.
+    redirect_url = event and (event.get("ticket_url") or event.get("event_url") or event.get("venue_url"))
+    if not redirect_url:
         return redirect("/calendar")
 
     name = event.get("name", "Houston Event")
@@ -371,5 +377,5 @@ def share_redirect(event_id):
         description=f"{event.get('venue', '')} -- {event.get('start_date', '')}",
         image_url=url_for("event_card.event_card_image", event_id=event_id, _external=True),
         canonical_url=url_for("event_card.share_redirect", event_id=event_id, _external=True),
-        redirect_url=event["ticket_url"],
+        redirect_url=redirect_url,
     )

@@ -182,6 +182,12 @@ VENUES = {
         "scroll_count": 1,
         "paginated": True,
         "next_page_selector": "#moreshowsbtn",
+        # Added 2026-07-31: /houston/event/<slug>/<digits>/ links carry a trailing numeric
+        # segment that looks like a per-event ID but isn't one — confirmed by diffing two
+        # "different" IDs' HTML (only the ID echoed back differed) and by a bogus ID still
+        # resolving. Stripped so the same show's link is stable across re-scrapes; doesn't
+        # touch /houston/comic/<name>/ profile pages (no trailing digits to match).
+        "strip_end_url": r'\d+/$',
     },
     "riot_comedy": {
         "name": "The Riot Comedy Club",
@@ -1656,6 +1662,24 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         # event_url across different real dates, disproving that assumption, so the safe default
         # is now uniform across both fields.
         event['dupe_use_start_date'] = venue.get('dupe_use_start_date', True)
+        # General per-venue URL cleanup: a regex pattern matched against the END of
+        # ticket_url/event_url and stripped out. Added for Improv Houston, whose event-page
+        # links embed a trailing numeric segment that looks like a per-event ID but isn't —
+        # diffing the HTML of the same show under two different numbers turned up only the
+        # ID itself changing (title tag, one meta ref), confirmed via a bogus ID still
+        # resolving to the same page. That noise made every re-scrape look like a new URL,
+        # corrupting both save_to_database's URL-match and check_canceled_events' url_match.
+        # Regex (vs. a fixed char count or "strip back to the last /") because it only fires
+        # on the shape it's meant for — e.g. Improv's r'\d+/$' leaves comic profile pages
+        # (/houston/comic/<name>/, no trailing digits) untouched — and generalizes to
+        # whatever the next venue's noise turns out to be (a tracking query string, an
+        # affiliate suffix) by supplying a different pattern, no new code.
+        event['strip_end_url'] = venue.get('strip_end_url')
+        if event['strip_end_url']:
+            if event.get('ticket_url'):
+                event['ticket_url'] = re.sub(event['strip_end_url'], '', event['ticket_url'])
+            if event.get('event_url'):
+                event['event_url'] = re.sub(event['strip_end_url'], '', event['event_url'])
 
     # A hash change means the page's content moved for one of three reasons: a new
     # event, a changed event, or a canceled event — so whenever we've actually
