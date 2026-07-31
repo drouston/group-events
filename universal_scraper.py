@@ -162,7 +162,30 @@ VENUES = {
         "city": "Sugar Land",
         "state": "TX",
         "wait_time": 6,
-        "scroll_count": 3
+        "scroll_count": 3,
+        # Added 2026-07-31 after Billy Strings (a real, still-listed show) got wrongly
+        # confirmed canceled: the concert-only URL is genre-filtered server-side via the URL
+        # path itself (no combined "all genres" view exists -- the bare /us/ path is just a
+        # category-selector landing page), and within that one genre the listing itself is
+        # paginated ("currentPage":1,"totalPages":2 in the page's own embedded data) with a
+        # real MUI pagination link we never followed. Both gaps let real upcoming shows fall
+        # outside what we ever saw, so check_canceled_events treated them as gone.
+        "paginated": True,
+        "next_page_selector": 'a[aria-label="Go to next page"]',
+        "urls": [
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/concert/",
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/comedy/",
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/dance/",
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/events/",
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/family/",
+            "https://us.atgtickets.com/venues/smart-financial-centre/whats-on/us/talk/",
+        ],
+        # A single late-night show (e.g. Jill Scott, 7:30pm CDT) gets displayed by ATG as a
+        # date range ("Sun, Aug 30 - Mon, Aug 31") because it technically runs past midnight --
+        # confirmed via the page's own JSON-LD, which shows one performance, not two. Without
+        # this flag, expand_multi_night_events() treats that range as a genuine multi-night
+        # residency and splits it into two duplicate calendar rows.
+        "allows_multi_day": True,
     },
     "bayou_music_center": {
         "name": "Bayou Music Center",
@@ -1552,34 +1575,43 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # Handle paginated venues
     if venue.get('paginated'):
         combined_text = ''
-        current_url = venue['url']
-        page_num = 1
-        max_pages = venue.get('max_pages', 10)  # Safety limit
+        max_pages = venue.get('max_pages', 10)  # Safety limit, applies per start URL
         next_page_selector = venue.get('next_page_selector', '#moreshowsbtn')
+        # 'urls' (plural) covers sites that partition listings server-side into separate
+        # sections with no combined view — e.g. Smart Financial Centre's ATG listing pages
+        # are filtered by genre in the URL path itself (concert/comedy/dance/etc.), each
+        # with its own pagination, and there's no "all genres" URL to fetch instead. Falls
+        # back to the single 'url' for venues (like Improv) that just paginate one listing.
+        start_urls = venue.get('urls') or [venue['url']]
+        total_pages_fetched = 0
 
-        while current_url and page_num <= max_pages:
-            print(f"  Fetching page {page_num}: {current_url}")
-            page_text, html = scrape_page(
-                current_url,
-                wait_time=venue.get('wait_time', 3),
-                debug=debug,
-                scroll_count=scroll_count,
-                load_more_id=venue.get('load_more_id')
-            )
-            combined_text += '\n' + page_text
+        for start_url in start_urls:
+            current_url = start_url
+            page_num = 1
+            while current_url and page_num <= max_pages:
+                print(f"  Fetching page {page_num}: {current_url}")
+                page_text, html = scrape_page(
+                    current_url,
+                    wait_time=venue.get('wait_time', 3),
+                    debug=debug,
+                    scroll_count=scroll_count,
+                    load_more_id=venue.get('load_more_id')
+                )
+                combined_text += '\n' + page_text
+                total_pages_fetched += 1
 
-            # Look for next page link
-            soup = BeautifulSoup(html, 'html.parser')
-            next_link = soup.select_one(next_page_selector)
-            if next_link and next_link.get('href'):
-                current_url = urljoin(current_url, next_link['href'])
-                page_num += 1
-            else:
-                break
+                # Look for next page link
+                soup = BeautifulSoup(html, 'html.parser')
+                next_link = soup.select_one(next_page_selector)
+                if next_link and next_link.get('href'):
+                    current_url = urljoin(current_url, next_link['href'])
+                    page_num += 1
+                else:
+                    break
 
         page_text = combined_text
         html = ''  # Not needed after pagination
-        print(f"  ✓ Fetched {page_num} pages, {len(page_text)} total characters")
+        print(f"  ✓ Fetched {total_pages_fetched} pages across {len(start_urls)} start URL(s), {len(page_text)} total characters")
 
     else:
         page_text, html = scrape_page(

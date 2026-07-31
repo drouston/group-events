@@ -23,6 +23,13 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
 
 WORKDIR /app
 
+# Ensures stdout is flushed immediately rather than buffered — without this, a
+# container killed mid-run (e.g. by a redeploy landing during the pre-scrape
+# random delay) loses whatever hadn't been flushed yet, including the fact
+# that a scrape was attempted at all. Doesn't make an interrupted run retry —
+# just means it's visible in logs instead of silently vanishing.
+ENV PYTHONUNBUFFERED=1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
