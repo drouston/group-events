@@ -94,7 +94,12 @@ VENUES = {
         "venue_url": "https://theheightstheater.com/",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 3
+        "wait_time": 3,
+        # Confirmed 2026-07-30: ticket_url is a numeric Prekindle event ID, unique per
+        # occurrence (not a reused profile/template link) — safe to match on ticket_url alone
+        # and treat a date difference as a correction rather than a new event. This is what
+        # let 51 duplicate rows accumulate here undetected before the cleanup that day.
+        "dupe_use_start_date": False
     },
     "last_concert": {
         "name": "Last Concert Cafe",
@@ -138,6 +143,16 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
+        # Added 2026-07-30: page only ever rendered 36 of ~100+ current events regardless of
+        # scroll_count (1 through 20 all produced byte-identical output) — the rendered DOM
+        # stops at a Chakra UI spinner (<div class="chakra-spinner">Loading...</div>), a React
+        # infinite-scroll trigger. scrollTo(0, document.body.scrollHeight) overshoots that
+        # element instead of scrolling it into view, so the IntersectionObserver watching it
+        # never fires and the next batch never loads — same class of bug pagination_sentinel
+        # was built for (see Secret Group). scroll_count still controls how many times the
+        # sentinel gets scrolled into view as it moves down the page with each new batch.
+        "scroll_count": 12,
+        "pagination_sentinel": ".chakra-spinner",
         "venue_instruction": "Extract all events. For each event, populate the 'location' field with the specific room: 'Main Stage', 'Bronze Peacock', or 'Foundation Room'. If no room is specified, use 'Main Stage'."
     },
     "smart_financial": {
@@ -281,12 +296,13 @@ VENUES = {
     "echoes_htx": {
         "name": "Echoes",
         "aliases": ["Echoes HTX"],
-        "url": "https://www.echoeshtx.com/event-calendar",
+        "url": "https://www.echoeshtx.com/",
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
         "schedule_group": "afternoon",
+        "auto_approve": True,
     },
     "scout_bar": {
         "name": "Scout Bar",
@@ -1051,6 +1067,10 @@ def scrape_google_ics(venue_config, mode='daily'):
     classify_event_types(events)
     for event in events:
         event['visible'] = event.get('event_type') in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
+        # Never publicly visible either way, so there's no public-facing decision for a
+        # human to make — auto-approve to keep formulaic civic/generic listings (e.g. City
+        # Hall committee meetings) off the review queue instead of piling up unreviewed.
+        event['auto_approve'] = not event['visible']
     print(f"  ✓ Fetched {len(events)} events from Google Calendar ICS")
     return events
 
@@ -1620,6 +1640,22 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         if venue.get('unreliable_urls'):
             event['ticket_url'] = None
             event['event_url'] = None
+        # Controls for save_to_database's URL-identity matching. Defaults preserve today's
+        # behavior everywhere except event_url's date requirement (see dupe_use_start_date
+        # below) — only flip a venue's dupe_use_start_date to False after confirming its
+        # ticket_url/event_url is genuinely unique per occurrence (e.g. Heights Theater's
+        # numeric Prekindle event ID). Getting this wrong the unsafe direction silently merges
+        # distinct shows that share a reused link (a comic's profile page, a recurring weekly
+        # show's template page — confirmed real cases at Improv Houston and Dan Electro's
+        # respectively).
+        event['dupe_use_ticket_url'] = venue.get('dupe_use_ticket_url', True)
+        event['dupe_use_event_url'] = venue.get('dupe_use_event_url', True)
+        # True (date required alongside the URL) is the safe default for BOTH fields. event_url
+        # used to default to False here under the assumption an event_url is always per-occurrence
+        # — Dan Electro's recurring weekly shows (Karaoke Mondays, etc.) reuse one templated
+        # event_url across different real dates, disproving that assumption, so the safe default
+        # is now uniform across both fields.
+        event['dupe_use_start_date'] = venue.get('dupe_use_start_date', True)
 
     # A hash change means the page's content moved for one of three reasons: a new
     # event, a changed event, or a canceled event — so whenever we've actually
@@ -1725,9 +1761,14 @@ def save_to_database(events, mode='daily', auto_approve=False):
     skipped = 0
     flagged = 0
     updated = 0
+    date_corrections = 0
 
     for event in events:
         try:
+            # Computed early — needed both for the URL-match date-correction gate below and
+            # the new-insert status decision further down.
+            venue_auto_approve = auto_approve or auto_approve_map.get(event['venue'], False) or event.get('auto_approve', False)
+
             # Exact duplicate check: name + start_date + venue + start_time
             c.execute(f'''SELECT id FROM events
                             WHERE name = {ph} AND start_date = {ph}
@@ -1746,25 +1787,46 @@ def save_to_database(events, mode='daily', auto_approve=False):
             # only needs ONE of them to still match (e.g. a ticket vendor swaps the ticket_url
             # mid-run but the venue's own event_url page is stable, or vice versa) — requiring
             # both would silently miss a real match and fall through to a duplicate insert.
-            # ticket_url is scoped to venue+start_date too — some venues (e.g. a generic
-            # storefront link reused across every show, or a comedian's profile page reused
-            # across their own multiple nights) don't have a per-event-unique ticket_url, so a
-            # bare URL match could otherwise silently merge two different dates' events together.
-            # event_url is scoped to venue only (not date) since it's typically a per-event page
-            # rather than a per-date one.
-            if event.get('ticket_url') or event.get('event_url'):
-                c.execute(f'''SELECT id, name, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url
+            #
+            # Whether each field requires start_date to also match is controlled per-venue via
+            # dupe_use_ticket_url / dupe_use_event_url / dupe_use_start_date on the event dict
+            # (stamped in scrape_venue, default True/True/True). True is the safe default for
+            # both URL fields: some venues reuse one link across genuinely different dates (a
+            # comic's profile page at Improv Houston, a recurring weekly show's template page at
+            # Dan Electro's) and a bare match there would silently merge distinct shows. Only
+            # flip dupe_use_start_date to False for a venue once its URL is confirmed unique per
+            # occurrence (e.g. Heights Theater's numeric Prekindle event ID) — that's what lets a
+            # URL match with a *different* start_date be treated as a correction below instead of
+            # falling through to a duplicate insert.
+            dupe_use_ticket_url = event.get('dupe_use_ticket_url', True)
+            dupe_use_event_url = event.get('dupe_use_event_url', True)
+            dupe_use_start_date = event.get('dupe_use_start_date', True)
+
+            url_paths = []
+            url_params = []
+            if dupe_use_ticket_url and event.get('ticket_url'):
+                if dupe_use_start_date:
+                    url_paths.append(f'(ticket_url = {ph} AND start_date = {ph})')
+                    url_params += [event['ticket_url'], event.get('start_date')]
+                else:
+                    url_paths.append(f'ticket_url = {ph}')
+                    url_params.append(event['ticket_url'])
+            if dupe_use_event_url and event.get('event_url'):
+                if dupe_use_start_date:
+                    url_paths.append(f'(event_url = {ph} AND start_date = {ph})')
+                    url_params += [event['event_url'], event.get('start_date')]
+                else:
+                    url_paths.append(f'event_url = {ph}')
+                    url_params.append(event['event_url'])
+
+            if url_paths:
+                c.execute(f'''SELECT id, name, start_date, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url, status
                                 FROM events
                                 WHERE venue = {ph}
                                 AND status NOT IN ('rejected', 'canceled')
-                                AND (
-                                    (ticket_url = {ph} AND start_date = {ph})
-                                    OR event_url = {ph}
-                                )
+                                AND ({' OR '.join(url_paths)})
                                 LIMIT 1''',
-                            (event['venue'],
-                             event.get('ticket_url'), event.get('start_date'),
-                             event.get('event_url')))
+                            [event['venue']] + url_params)
                 url_match = c.fetchone()
             else:
                 url_match = None
@@ -1780,7 +1842,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 if url_match_name_similarity < NAME_SIMILARITY_FLOOR:
                     url_match = None
             if url_match:
-                ex_id, ex_name, ex_start, ex_doors, ex_end, ex_sold_out, ex_date_changed, ex_openers, ex_price, ex_ticket_url, ex_event_url = url_match
+                (ex_id, ex_name, ex_start_date, ex_start, ex_doors, ex_end, ex_sold_out,
+                 ex_date_changed, ex_openers, ex_price, ex_ticket_url, ex_event_url, ex_status) = url_match
                 changes = {}
                 if event['name'] != ex_name:
                     changes['name'] = event['name']
@@ -1806,12 +1869,30 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     changes['ticket_url'] = event['ticket_url']
                 if event.get('event_url') and event.get('event_url') != ex_event_url:
                     changes['event_url'] = event['event_url']
+                # Only reachable when the matched field's own start_date requirement was
+                # dropped (dupe_use_start_date False) — otherwise the query itself already
+                # required start_date equality, so this can't differ. Treat this like any other
+                # drifted field on a confirmed-same event — update in place — but an already-
+                # public (approved) row getting its date silently changed needs a human's eyes
+                # first unless the venue is trusted enough to auto-approve; same trust boundary
+                # new inserts already use.
+                date_corrected = False
+                if event.get('start_date') and event.get('start_date') != ex_start_date:
+                    changes['start_date'] = event['start_date']
+                    date_corrected = True
+                    if ex_status == 'approved' and not venue_auto_approve:
+                        changes['status'] = 'pending'
                 if changes:
                     set_clause = ', '.join(f'{k} = {ph}' for k in changes)
                     c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
                               list(changes.values()) + [ex_id])
                     label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
-                    print(f"  ↻ Updated ({', '.join(changes)}): {label}")
+                    if date_corrected:
+                        date_corrections += 1
+                        review_note = ' — sent back to pending for review' if changes.get('status') == 'pending' else ''
+                        print(f"  ⚠ Date corrected ({ex_start_date} → {event['start_date']}){review_note}: {label}")
+                    else:
+                        print(f"  ↻ Updated ({', '.join(changes)}): {label}")
                     updated += 1
                 skipped += 1
                 continue
@@ -1841,7 +1922,6 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             AND status IN ('pending', 'approved') ''',
                         (event['venue'], event.get('start_date')))
             existing = c.fetchall()
-            venue_auto_approve = auto_approve or auto_approve_map.get(event['venue'], False)
             status = 'approved' if venue_auto_approve else 'pending'
             duplicate_of_id = None
             event_type = event.get('event_type', 'music')
@@ -1849,19 +1929,25 @@ def save_to_database(events, mode='daily', auto_approve=False):
             if not event.get('genre') and event_type == 'comedy':
                 event['genre'] = 'Comedy'
             dup_threshold = dup_threshold_map.get(event['venue'], 0.5)
-            for ex_id, ex_name in existing:
-                similarity = SequenceMatcher(
-                    None, strip_opener_clause(event['name'].lower()), strip_opener_clause(ex_name.lower())
-                ).ratio()
-                if similarity >= dup_threshold:
-                    status = 'possible_duplicate'
-                    duplicate_of_id = ex_id
-                    print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
-                        f"{event['name']} ~ {ex_name}")
-                    flagged += 1
-                    break
-            if status == 'approved' and event.get('end_date') and event['end_date'] != event.get('start_date'):
-                status = 'pending'
+            # Skip fuzzy-duplicate flagging entirely for events auto-approved for being a
+            # non-visible type (e.g. ICS-fed civic meetings) — flagging exists to help a
+            # human tell two similarly-named events apart, but nothing here is ever shown
+            # to a human either way, so a flag would just re-add it to a review surface
+            # (possible_duplicate) that auto-approve was specifically meant to avoid.
+            if not event.get('auto_approve'):
+                for ex_id, ex_name in existing:
+                    similarity = SequenceMatcher(
+                        None, strip_opener_clause(event['name'].lower()), strip_opener_clause(ex_name.lower())
+                    ).ratio()
+                    if similarity >= dup_threshold:
+                        status = 'possible_duplicate'
+                        duplicate_of_id = ex_id
+                        print(f"  ⚠ Possible duplicate ({int(similarity*100)}% match): "
+                            f"{event['name']} ~ {ex_name}")
+                        flagged += 1
+                        break
+                if status == 'approved' and event.get('end_date') and event['end_date'] != event.get('start_date'):
+                    status = 'pending'
 
             # Insert event
             c.execute(f'''INSERT INTO events
@@ -1895,10 +1981,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     conn.commit()
     conn.close()
-    print(f"  ✓ Inserted {inserted}, updated {updated}, skipped {skipped} duplicates, flagged {flagged} possible duplicates")
+    print(f"  ✓ Inserted {inserted}, updated {updated} ({date_corrections} date corrections), skipped {skipped} duplicates, flagged {flagged} possible duplicates")
     return {
         'inserted': inserted,
         'updated': updated,
+        'date_corrections': date_corrections,
         'skipped': skipped,
         'flagged': flagged
     }
@@ -1910,26 +1997,35 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
     c = conn.cursor()
     ph = '%s'
     today = datetime.now().strftime('%Y-%m-%d')
-    
+
+    # Idempotent migration for the two update-tracking columns — cheap no-op after the
+    # first run. Lets venue_health surface an updates/date-corrections trend per venue, the
+    # signal that would have caught the Heights Theater date-drift bug before 51 duplicate
+    # rows piled up undetected.
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS updated_events INTEGER DEFAULT 0''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS date_corrections INTEGER DEFAULT 0''')
+
     # Get current totals
-    c.execute(f'''SELECT 
+    c.execute(f'''SELECT
         COUNT(*) FILTER (WHERE status = 'approved') as approved,
         COUNT(*) FILTER (WHERE status = 'pending') as pending,
         COUNT(*) FILTER (WHERE status = 'rejected') as rejected
         FROM events WHERE venue = {ph}''', (venue_name,))
     row = c.fetchone()
-    
+
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
-         new_events, canceled_events, total_pending, scrape_mode)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
          stats.get('inserted', 0),
          canceled_count,
          row[1],
-         mode))
+         mode,
+         stats.get('updated', 0),
+         stats.get('date_corrections', 0)))
     conn.commit()
     conn.close()
 
@@ -1978,6 +2074,69 @@ def detect_existing_duplicates(dry_run=False):
     print(f"\n{'='*60}")
     print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} possible duplicates")
     print(f"{'='*60}")
+
+def detect_url_date_conflicts(dry_run=False):
+    """Scan for active events sharing a ticket_url or event_url with another active event at
+    the same venue but a DIFFERENT start_date — the shape of bug that let 51 duplicate rows
+    accumulate undetected at Heights Theater (each re-scrape extracting a slightly different,
+    wrong date for the same show, and neither the exact-match nor URL-match check in
+    save_to_database catches a same-link-different-date pair by design).
+
+    save_to_database's own update-in-place logic (dupe_use_start_date) now self-heals this for
+    any venue explicitly confirmed to have a unique-per-event URL. This is the backstop for
+    every other venue — where that confirmation hasn't been done, so a genuine date drift still
+    falls through as a fresh insert instead of an update — and for detect_existing_duplicates'
+    blind spot too (same-date fuzzy-name matching won't catch two rows that disagree on date at
+    all). Flags the newer row as possible_duplicate rather than resolving anything automatically
+    — the correct date isn't decidable from the DB alone (see the Willow Avalon/Heights cleanup:
+    the drift direction wasn't consistent, so "oldest wins" would sometimes be wrong).
+    """
+    from collections import defaultdict
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+
+    c.execute('''SELECT id, name, venue, start_date, ticket_url, event_url
+                 FROM events
+                 WHERE status IN ('pending', 'approved')
+                 AND (ticket_url IS NOT NULL OR event_url IS NOT NULL)
+                 ORDER BY id ASC''')
+    rows = c.fetchall()
+
+    groups = defaultdict(list)
+    for event_id, name, venue, start_date, ticket_url, event_url in rows:
+        if ticket_url:
+            groups[('ticket_url', venue, ticket_url)].append((event_id, name, start_date))
+        if event_url:
+            groups[('event_url', venue, event_url)].append((event_id, name, start_date))
+
+    flagged = 0
+    seen_ids = set()
+    for (field, venue, url), group in groups.items():
+        if len({r[2] for r in group}) < 2:
+            continue
+        group.sort(key=lambda r: r[0])
+        canonical_id, canonical_name, canonical_date = group[0]
+        for event_id, name, start_date in group[1:]:
+            if start_date == canonical_date or event_id in seen_ids:
+                continue
+            print(f"  ⚠ {field} shared across dates: #{event_id} '{name}' ({start_date}) "
+                  f"~ #{canonical_id} '{canonical_name}' ({canonical_date}) [{venue}]")
+            if not dry_run:
+                c.execute(f'''UPDATE events SET status = 'possible_duplicate', duplicate_of_id = {ph}
+                              WHERE id = {ph}''', (canonical_id, event_id))
+            seen_ids.add(event_id)
+            flagged += 1
+
+    if not dry_run:
+        conn.commit()
+    conn.close()
+
+    print(f"\n{'='*60}")
+    print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} URL/date conflicts")
+    print(f"{'='*60}")
+    return flagged
 
 def archive_past_events(buffer_days=1):
     """Move past events (of any review status, including never-reviewed pending
@@ -2067,9 +2226,16 @@ if __name__ == "__main__":
 
     print(f"=== Houston Music Events Scraper [{args.mode} mode] ===\n")
 
-    # Archive past events on weekly run
+    # Weekly maintenance sweep: archive past events, and flag duplicates that only
+    # per-venue scrape logic can't catch — same-date fuzzy-name collisions
+    # (detect_existing_duplicates) and same-link-different-date collisions
+    # (detect_url_date_conflicts), the latter added after the Heights Theater date-drift
+    # cleanup on 2026-07-30.
     if args.mode == 'weekly':
         archive_past_events(buffer_days=1)
+        print(f"\n=== Weekly duplicate sweep ===")
+        detect_existing_duplicates(dry_run=False)
+        detect_url_date_conflicts(dry_run=False)
 
     if args.venue:
         if args.venue not in VENUES:

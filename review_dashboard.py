@@ -970,6 +970,17 @@ def _venue_health_inner():
             cache_rows = c.fetchall()
         except Exception:
             cache_rows = []
+
+        try:
+            c.execute('''
+                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0)
+                FROM scrape_stats
+                WHERE scrape_date >= (CURRENT_DATE - INTERVAL '30 days')::text
+                GROUP BY venue
+            ''')
+            update_rows = c.fetchall()
+        except Exception:
+            update_rows = []
     else:
         c.execute('''
             SELECT venue,
@@ -1010,9 +1021,21 @@ def _venue_health_inner():
         except Exception:
             cache_rows = []
 
+        try:
+            c.execute('''
+                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0)
+                FROM scrape_stats
+                WHERE scrape_date >= date('now','-30 days')
+                GROUP BY venue
+            ''')
+            update_rows = c.fetchall()
+        except Exception:
+            update_rows = []
+
     conn.close()
 
     key_to_scraped = {r[0]: r[1] for r in cache_rows}
+    venue_to_updates = {r[0]: (r[1], r[2]) for r in update_rows}
     name_to_key = {v: k for k, v in VENUE_KEY_TO_NAME.items()}
     now_dt = datetime.now(CENTRAL)
 
@@ -1022,6 +1045,9 @@ def _venue_health_inner():
         d = dict(zip(cols, row))
         key = name_to_key.get(d['venue'])
         last_scraped_raw = key_to_scraped.get(key) if key else None
+        updated_30d, date_corrections_30d = venue_to_updates.get(d['venue'], (0, 0))
+        d['updated_30d'] = updated_30d
+        d['date_corrections_30d'] = date_corrections_30d
 
         days_since = None
         last_scraped_label = 'Never'
@@ -1035,9 +1061,13 @@ def _venue_health_inner():
             except Exception:
                 pass
 
-        if d['canceled_30d'] >= 5 or (d['upcoming'] == 0 and (days_since is None or days_since > 3)):
+        # Recurring date corrections are the trend that would have caught the Heights
+        # Theater date-drift bug early (51 duplicate rows accumulated over ~6 weeks before
+        # anyone noticed) — a venue whose already-saved events keep needing their date
+        # fixed is a sign its extraction is unstable, not that shows keep genuinely moving.
+        if d['canceled_30d'] >= 5 or date_corrections_30d >= 10 or (d['upcoming'] == 0 and (days_since is None or days_since > 3)):
             health = 'red'
-        elif d['canceled_30d'] >= 2 or d['pending'] >= 10 or (days_since is not None and days_since > 2):
+        elif d['canceled_30d'] >= 2 or d['pending'] >= 10 or date_corrections_30d >= 3 or (days_since is not None and days_since > 2):
             health = 'yellow'
         else:
             health = 'green'
