@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, url_for
 import json
 import sqlite3
 import os
@@ -12,6 +12,44 @@ app = Flask(__name__)
 
 # Database configuration - use PostgreSQL if DATABASE_URL exists (production), else SQLite (local)
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# Which domain shows which cities' events on the public calendar. Grouped by metro
+# area for now (not per-city) - e.g. Houston/Woodlands/Sugar Land/Galveston are all
+# "Houston" until a finer neighborhood-level breakdown is built. Unmatched hosts
+# (local dev, the *.up.railway.app default domain) show everything unfiltered.
+HOST_CITY_GROUPS = {
+    'houeventlist.com': ['Houston', 'The Woodlands', 'Sugar Land', 'Galveston'],
+    'atxeventlist.com': ['Austin'],
+}
+
+def get_allowed_cities():
+    """Cities to show for the current request's domain, or None for no filter."""
+    host = request.host.split(':')[0].lower()
+    for domain, cities in HOST_CITY_GROUPS.items():
+        if host == domain or host == f'www.{domain}':
+            return cities
+    return None
+
+# Per-domain branding for the OG share-preview card (og_image.py): the abbreviation
+# rendered on the card and the full city name used in its copy. This is one shared
+# deployment serving multiple domains from the same running process, so branding has
+# to be resolved per-request from the Host header (like get_allowed_cities() above) --
+# a module-level constant/env var can't distinguish two domains hitting the same
+# process at the same time. To add a future city: one entry here, one in
+# HOST_CITY_GROUPS above.
+HOST_CITY_BRANDING = {
+    'houeventlist.com': {'abbr': 'HOU', 'name': 'Houston'},
+    'atxeventlist.com': {'abbr': 'ATX', 'name': 'Austin'},
+}
+DEFAULT_CITY_BRANDING = {'abbr': 'HOU', 'name': 'Houston'}
+
+def get_city_branding():
+    """Card abbreviation + display city name for the current request's domain."""
+    host = request.host.split(':')[0].lower()
+    for domain, branding in HOST_CITY_BRANDING.items():
+        if host == domain or host == f'www.{domain}':
+            return branding
+    return DEFAULT_CITY_BRANDING
 
 def get_db_connection():
     """Get database connection - PostgreSQL in production, SQLite locally"""
@@ -39,7 +77,7 @@ def get_event_by_id(event_id):
     return event
 
 from og_image import event_card_bp, init as init_og_image
-init_og_image(get_db_connection, get_event_by_id)
+init_og_image(get_db_connection, get_event_by_id, get_city_branding)
 app.register_blueprint(event_card_bp)
 
 def init_db():
@@ -502,15 +540,22 @@ def calendar():
     today = today_date.isoformat()
     ph = '%s' if DATABASE_URL else '?'
     vis = 'true' if DATABASE_URL else '1'
+    allowed_cities = get_allowed_cities()
 
-    c.execute(f'''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
+    query = f'''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                          multi_day, venue, location, city,
                          price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url
                          FROM events
                          WHERE status = 'approved'
                          AND visible = {vis}
-                         AND start_date >= {ph}
-                         ORDER BY start_date ASC''', (today,))
+                         AND start_date >= {ph}'''
+    params = [today]
+    if allowed_cities:
+        query += f" AND city IN ({', '.join([ph] * len(allowed_cities))})"
+        params.extend(allowed_cities)
+    query += ' ORDER BY start_date ASC'
+
+    c.execute(query, params)
     events = []
     for row in c.fetchall():
         events.append({
@@ -600,6 +645,8 @@ def calendar():
         if e['event_type'] in weekend_types and weekend_start <= e['start_date'] <= weekend_end
     ]
 
+    city_name = get_city_branding()['name']
+
     return render_template(
         'calendar.html',
         events=events,
@@ -609,6 +656,9 @@ def calendar():
         week_label=week_label,
         this_week=this_week,
         this_weekend=this_weekend,
+        city_name=city_name,
+        og_image_url=url_for('event_card.homepage_card_image', _external=True),
+        og_url=url_for('calendar', _external=True),
     )
 
 @app.route('/api/events')

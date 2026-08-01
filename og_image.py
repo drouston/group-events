@@ -66,19 +66,31 @@ def _s(v):
 #
 # Rather than importing back from review_dashboard.py (which causes a
 # circular-import loop when review_dashboard.py is run directly as __main__),
-# review_dashboard.py hands us its existing get_db_connection and
-# get_event_by_id functions via init(). Call init() once, right after
-# both functions are defined, before registering the blueprint.
+# review_dashboard.py hands us its existing get_db_connection, get_event_by_id,
+# and get_city_branding functions via init(). Call init() once, right after
+# all three are defined, before registering the blueprint.
 # ---------------------------------------------------------------------------
 
 _get_db_connection = None
 _get_event_by_id = None
+_get_city_branding = None
 
 
-def init(get_db_connection_fn, get_event_by_id_fn):
-    global _get_db_connection, _get_event_by_id
+def init(get_db_connection_fn, get_event_by_id_fn, get_city_branding_fn):
+    global _get_db_connection, _get_event_by_id, _get_city_branding
     _get_db_connection = get_db_connection_fn
     _get_event_by_id = get_event_by_id_fn
+    _get_city_branding = get_city_branding_fn
+
+
+def _city_branding():
+    """Card abbreviation + display city name for the current request's domain --
+    this is one shared deployment serving multiple domains, resolved per-request
+    (see get_city_branding in review_dashboard.py), not a fixed constant."""
+    if _get_city_branding is None:
+        raise RuntimeError("og_image.init() must be called before use -- "
+                            "see review_dashboard.py wiring")
+    return _get_city_branding()
 
 
 def _get_conn():
@@ -107,7 +119,9 @@ def ensure_stats_table():
     _stats_table_ready = True
 
 
-def increment_and_get_hits():
+def increment_and_get_hits(stat_key='total_hits'):
+    """stat_key lets each event (f'event_{id}_hits') and the homepage ('homepage_hits')
+    keep their own independent tally in the same table, instead of one site-wide total."""
     if not _stats_table_ready:
         ensure_stats_table()
 
@@ -117,16 +131,18 @@ def increment_and_get_hits():
 
     if is_sqlite:
         cur.execute(
-            "INSERT INTO site_stats (stat_key, count) VALUES ('total_hits', 1) "
-            "ON CONFLICT(stat_key) DO UPDATE SET count = count + 1"
+            "INSERT INTO site_stats (stat_key, count) VALUES (?, 1) "
+            "ON CONFLICT(stat_key) DO UPDATE SET count = count + 1",
+            (stat_key,)
         )
-        cur.execute("SELECT count FROM site_stats WHERE stat_key = 'total_hits'")
+        cur.execute("SELECT count FROM site_stats WHERE stat_key = ?", (stat_key,))
         hits = cur.fetchone()[0]
     else:
         cur.execute(
-            "INSERT INTO site_stats (stat_key, count) VALUES ('total_hits', 1) "
+            "INSERT INTO site_stats (stat_key, count) VALUES (%s, 1) "
             "ON CONFLICT (stat_key) DO UPDATE SET count = site_stats.count + 1 "
-            "RETURNING count"
+            "RETURNING count",
+            (stat_key,)
         )
         hits = cur.fetchone()[0]
 
@@ -236,7 +252,7 @@ def _tag_badge(draw, x, y, w, h, border_color, lines, font):
 # Main renderer
 # ---------------------------------------------------------------------------
 
-def render_geocities(event, hits):
+def render_geocities(event, hits, city_abbr="HOU", city_name="Houston"):
     img = Image.new("RGB", (W, H))
     draw = ImageDraw.Draw(img)
 
@@ -270,10 +286,10 @@ def render_geocities(event, hits):
 
     # HOU bevel text: drop shadow, then gradient fill with stroke
     hou_font = _font("ArchivoBlack-Regular.ttf", int(_s(120)))
-    shadow_layer = _gradient_text((0, 0), "HOU", hou_font,
+    shadow_layer = _gradient_text((0, 0), city_abbr, hou_font,
                                    [(0, (0, 0, 0)), (1, (0, 0, 0))], int(_s(3)), (0, 0, 0))
     shadow_layer.putalpha(shadow_layer.getchannel("A").point(lambda a: int(a * 0.55)))
-    hou_layer = _gradient_text((0, 0), "HOU", hou_font,
+    hou_layer = _gradient_text((0, 0), city_abbr, hou_font,
                                 [(0, (255, 238, 0)), (0.45, (255, 106, 0)), (1, (224, 0, 26))],
                                 int(_s(3)), (92, 0, 0))
 
@@ -292,7 +308,7 @@ def render_geocities(event, hits):
     # Tagline (rainbow-ish gradient, left to right approximated as vertical band per line -
     # rendered as horizontal gradient via rotated approach)
     tag_font = _font("ComicNeue-Bold.ttf", int(_s(17)))
-    tag_text = "*~* Houston Music & Comedy Events *~*"
+    tag_text = f"*~* {city_name} Music & Comedy Events *~*"
     tmp = Image.new("RGBA", (10, 10))
     tbbox = ImageDraw.Draw(tmp).textbbox((0, 0), tag_text, font=tag_font)
     tw, th = tbbox[2] - tbbox[0], tbbox[3] - tbbox[1]
@@ -344,9 +360,25 @@ def pick_template(event_id):
 @event_card_bp.route("/e/<int:event_id>/card.png")
 def event_card_image(event_id):
     event = _get_event_by_id(event_id) or {}
-    hits = increment_and_get_hits()
+    hits = increment_and_get_hits(f"event_{event_id}_hits")
     template = pick_template(event_id)
-    img = RENDERERS[template](event, hits)
+    branding = _city_branding()
+    img = RENDERERS[template](event, hits, branding["abbr"], branding["name"])
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+
+@event_card_bp.route("/card.png")
+def homepage_card_image():
+    """OG image for the homepage/calendar share preview -- same card design (it never
+    reads event fields anyway, see render_geocities), but its own independent hit
+    counter rather than any single event's."""
+    hits = increment_and_get_hits("homepage_hits")
+    branding = _city_branding()
+    img = RENDERERS[TEMPLATES[0]]({}, hits, branding["abbr"], branding["name"])
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -366,7 +398,7 @@ def share_redirect(event_id):
     if not redirect_url:
         return redirect("/calendar")
 
-    name = event.get("name", "Houston Event")
+    name = event.get("name") or f"{_city_branding()['name']} Event"
     date_str = _format_share_date(event.get("start_date"))
     venue = event.get("venue", "")
     title = f"{name} - {date_str} @ {venue}" if (date_str or venue) else name

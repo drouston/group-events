@@ -3,7 +3,7 @@
 ## Project Overview
 A Houston-focused events aggregator that scrapes venue websites, uses LLM extraction, and presents events on a public calendar with an internal review dashboard.
 
-**Live URL:** houstonevents.com (intended domain)
+**Live URLs:** houeventlist.com (Houston, live) — atxeventlist.com (Austin, in progress)
 **Deployed on:** Railway
 **Repo:** Big-Junk:group-events
 
@@ -130,8 +130,26 @@ miller_outdoor      # Miller Outdoor Theatre (own site — previously only a byp
 docs_jazz           # Doc's Jazz Club
 arena_theatre       # Arena Theatre (event names/dates parsed from URL slugs — no visible listing text on site)
 dosey_doe           # Dosey Doe - The Big Barn (The Woodlands)
+
+# Austin
+emos_austin           # Emo's Austin
+stubbs_austin         # Stubb's Bar-B-Q
+acl_live              # ACL Live at The Moody Theater
+moody_center          # Moody Center
+mohawk_austin         # The Mohawk (url is the site root, not /events/ — see VENUES.md)
+cactus_cafe           # Cactus Cafe (UT Austin) — pending events need manual cleanup, see VENUES.md Open Items
+come_and_take_it_live # Come and Take It Live
+scoot_inn_austin      # Historic Scoot Inn
+vulcan_gas_company    # Vulcan Gas Company (mixed per-show ticketing platforms)
+broken_spoke          # Broken Spoke (no ticketing, free/cover shows)
+cap_city_comedy       # Cap City Comedy Club (Seat Engine)
+velveeta_room         # The Velveeta Room (Seat Engine, partial capture)
+fallout_theater       # Fallout Theater
+ballroom_29th_street  # 29th Street Ballroom (formerly Spider House Ballroom)
+esthers_follies       # Esther's Follies (weekly revue, not a touring-act calendar)
+cheer_up_charlies     # Cheer Up Charlie's (mechanism works, currently 0 events on site)
 ```
-See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes per venue.
+See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes per venue. Six more Austin venues (`antones_austin`, `continental_club_austin`, `cboys`, `white_horse_austin`, `hole_in_the_wall`, `saxon_pub`) have config in place but aren't onboarded yet — see VENUES.md's "Austin — needs follow-up work" section for each one's specific blocker.
 
 ---
 
