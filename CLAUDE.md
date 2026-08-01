@@ -127,6 +127,9 @@ armadillo_palace    # Goode Company Armadillo Palace
 moth                # MOTH Presents
 numbers             # Numbers (Montrose nightclub)
 miller_outdoor      # Miller Outdoor Theatre (own site — previously only a byproduct of the city ICS feed)
+docs_jazz           # Doc's Jazz Club
+arena_theatre       # Arena Theatre (event names/dates parsed from URL slugs — no visible listing text on site)
+dosey_doe           # Dosey Doe - The Big Barn (The Woodlands)
 ```
 See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes per venue.
 

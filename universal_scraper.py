@@ -379,6 +379,32 @@ VENUES = {
         "wait_time": 5,
         "scroll_count": 3,
     },
+    "docs_jazz": {
+        "name": "Doc's Jazz Club",
+        "aliases": ["Doc's"],
+        "url": "https://tickets.docshouston.com/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
+    "arena_theatre": {
+        "name": "Arena Theatre",
+        "url": "https://arenahouston.com/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
+    "dosey_doe": {
+        "name": "Dosey Doe - The Big Barn",
+        "aliases": ["Dosey Doe"],
+        "url": "https://www.doseydoetickets.com",
+        "city": "The Woodlands",
+        "state": "TX",
+        "wait_time": 5,
+        "scroll_count": 3,
+    },
 }
 
 def get_content_hash(content):
