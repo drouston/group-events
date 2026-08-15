@@ -102,6 +102,14 @@ python3 universal_scraper.py --mode onboard     # New venue, skip hash, filter p
 - **Weekly automated sweep** (`--mode weekly` only) — `detect_existing_duplicates()` (same-date fuzzy-name pairs) and `detect_url_date_conflicts()` (same ticket_url/event_url, different start_date — the backstop for venues that don't have `dupe_use_start_date: False`) both run automatically, flagging matches as `possible_duplicate` for review. Added 2026-07-30 after a Heights Theater date-drift bug (LLM occasionally mis-extracted the wrong date for an already-known show on re-scrape) let 51 duplicate rows accumulate over ~6 weeks undetected — neither existing check compares URLs across *different* dates, so nothing ever flagged them until a manual review caught it.
 - Scraping stats (`scrape_stats` table, surfaced on `/venue_health`) track `updated_events` and `date_corrections` per venue per run — a venue with a recurring `date_corrections` count is a sign its extraction is unstable, not that its shows keep genuinely moving. Feeds into that venue's health flag (yellow at ≥3/30d, red at ≥10/30d).
 
+#### Verifying `dupe_use_start_date: False` for a venue
+Don't set this flag on platform analogy alone (e.g. "it's Prekindle, like Heights, so it's probably fine") — verify directly:
+1. Query the venue's active (`pending`/`approved`) rows for any `ticket_url`/`event_url` shared across more than one distinct `start_date`.
+2. Compare `name`s across the different dates for each shared-URL group found:
+   - **Same or near-identical name** (only formatting/opener drift) → the date is what's unreliable, not the identity — the date-drift signature this flag is for. Safe to set `False`.
+   - **Genuinely different names** sharing one URL → the link is a reused generic page (a comic's profile page, a recurring-weekly template, a category/series page), not a per-occurrence identifier. **Do not** set the flag — matches would silently merge unrelated shows (confirmed at Improv Houston and Dan Electro's).
+3. Zero shared-URL rows found is inconclusive, not a green light. Default to leaving the venue on the safe default (`True`) unless there's separate, direct confirmation (e.g. diffing the HTML of two differently-numbered URLs for the same show, or the ticketing platform documenting its ID scheme as per-occurrence).
+
 ---
 
 ## Venues

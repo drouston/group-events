@@ -5,7 +5,7 @@ import time
 import sqlite3
 from dateutil.utils import today
 from difflib import SequenceMatcher
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import requests
 from datetime import datetime, timedelta
 
@@ -77,7 +77,12 @@ VENUES = {
         "venue_url": "https://badastronautbeer.com/",
         "city": "Houston",
         "state": "TX",
-        "wait_time": 3
+        "wait_time": 3,
+        # Confirmed 2026-08-14 via the dupe_use_start_date verification procedure (see
+        # CLAUDE.md): Prekindle ticket_url is unique per occurrence here too (same signature
+        # as Heights Theater) — the one shared-URL case found was a date-drift pair with the
+        # same event name on both dates, not a reused generic link.
+        "dupe_use_start_date": False
     },
     "white_oak": {
         "name": "White Oak Music Hall",
@@ -387,6 +392,10 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
+        # Updated 2026-08-07: the LLM's domain-based ticket/event rule (both links live on
+        # tickets.docshouston.com, same domain as this venue's own url) now reliably puts the
+        # good numeric /shows/<id>/<date> link in event_url and leaves ticket_url null, so no
+        # longer nulling event_url here.
     },
     "arena_theatre": {
         "name": "Arena Theatre",
@@ -750,9 +759,11 @@ def check_canceled_events(venue_key, scraped_events):
         return False
 
     def url_match(db_ticket_url, db_event_url):
-        if db_ticket_url and db_ticket_url in scraped_ticket_urls:
+        # Cross-field: the LLM doesn't reliably pick the same field for the same link
+        # between scrapes.
+        if db_ticket_url and (db_ticket_url in scraped_ticket_urls or db_ticket_url in scraped_event_urls):
             return True
-        if db_event_url and db_event_url in scraped_event_urls:
+        if db_event_url and (db_event_url in scraped_ticket_urls or db_event_url in scraped_event_urls):
             return True
         return False
 
@@ -878,28 +889,19 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
         # or pagination's next-page-link detection — those re-parse the untouched HTML.
         for tag in soup(['script', 'style', 'header', 'nav', 'footer']):
             tag.decompose()
-        page_text = soup.get_text(separator='\n', strip=True)
 
-        # Append all external links so the LLM can extract ticket_url / event_url.
-        # Resolve every href to an absolute URL against this page's own URL here,
-        # rather than leaving relative paths for the LLM to resolve itself — a page
-        # that also happens to mention a different domain elsewhere (e.g. a sister
-        # venue link) can otherwise get the LLM to guess the wrong base domain for
-        # every relative link on the page.
-        links_seen = set()
-        link_lines = []
+        # Inline each link's URL into its own anchor text (not a separate list at the
+        # end) so the LLM sees it next to the right event instead of having to count
+        # positions across two lists.
         for a in soup.find_all('a', href=True):
             href = a['href'].strip()
             if not href or href.startswith('#') or href.startswith('mailto:'):
                 continue
             href = urljoin(url, href)
-            if href in links_seen:
-                continue
-            links_seen.add(href)
-            label = a.get_text(strip=True) or ''
-            link_lines.append(f"{label} -> {href}")
-        if link_lines:
-            page_text += '\n\nLINKS:\n' + '\n'.join(link_lines)
+            label = a.get_text(strip=True)
+            a.string = f"{label} [{href}]" if label else f"[{href}]"
+
+        page_text = soup.get_text(separator='\n', strip=True)
 
         print(f"Extracted {len(page_text)} characters")
         print(f"HTML length: {len(html)} characters")  # Show raw HTML size
@@ -1428,6 +1430,8 @@ def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, v
     """
     content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else ""
+    netloc = urlparse(venue_url).netloc if venue_url else ''
+    venue_domain = netloc[4:] if netloc.startswith('www.') else netloc
     system_prompt = f"""You are an expert at extracting structured event data from venue websites. The name of this venue is "{venue_name}", and it's website is "{venue_url}". Today's date is {datetime.now().strftime('%Y-%m-%d')}.
 Extract ALL events from the provided {content_type} into a JSON array. For each event:
 
@@ -1449,8 +1453,8 @@ Fields to extract:
 - end_time: HH:MM format (24-hour) or null
   DO NOT apply any timezone conversion. Keep times exactly as shown.
 - price: Extract if mentioned, otherwise null
-- ticket_url: Full URL to ticketing page if present, otherwise null
-- event_url: Full URL to the event's own detail page if present (distinct from ticket URL), otherwise null
+- ticket_url: Full URL to the external ticketing page if present — typically a DIFFERENT domain than {venue_domain} (a ticketing partner like Ticketmaster, Prekindle, Eventbrite, AXS, Square), otherwise null
+- event_url: Full URL to the event's own detail page on the venue's OWN site if present (same domain as {venue_domain}, distinct from ticket_url), otherwise null
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
@@ -1880,15 +1884,21 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         event['state'] = venue['state']
         if event.get('name'):
             event['name'] = strip_venue_reference(event['name'], venue['name'])
-        # Some venues' per-event links can't be trusted at all (e.g. Toyota Center's
-        # identical "More Info & Ticket Options" anchor text on every event, which the
-        # LLM can't reliably pair to the right show — confirmed still misattributing
-        # links between neighboring events in live data). Force these to null so the
-        # calendar's fallback chain (ticket_url -> event_url -> venue_url) lands on the
-        # venue's generic events page instead of a wrong specific one.
-        if venue.get('unreliable_urls'):
+        # Some venues' per-event links can't be trusted — force the untrustworthy one(s)
+        # to null so the calendar's fallback chain (ticket_url -> event_url -> venue_url)
+        # lands on the venue's generic events page instead of a wrong specific one.
+        # True nulls both (e.g. Toyota Center's identical "More Info & Ticket Options"
+        # anchor text on every event, which the LLM can't reliably pair to the right show).
+        # A field name ('ticket_url' or 'event_url') nulls only that one, for venues where
+        # just one field is the problem (e.g. Doc's Jazz Club's event_url — a generic
+        # vanity link sometimes misattributed to a neighboring event, sometimes a shared
+        # non-specific landing page — while ticket_url there is fine and worth keeping).
+        unreliable = venue.get('unreliable_urls')
+        if unreliable is True:
             event['ticket_url'] = None
             event['event_url'] = None
+        elif unreliable in ('ticket_url', 'event_url'):
+            event[unreliable] = None
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
@@ -2069,22 +2079,26 @@ def save_to_database(events, mode='daily', auto_approve=False):
             dupe_use_event_url = event.get('dupe_use_event_url', True)
             dupe_use_start_date = event.get('dupe_use_start_date', True)
 
+            # Checked cross-field (a new ticket_url can match a stored event_url and vice
+            # versa) since the LLM doesn't reliably pick the same field name for the same
+            # link between scrapes (confirmed at HOB and Arena Theatre).
             url_paths = []
             url_params = []
-            if dupe_use_ticket_url and event.get('ticket_url'):
-                if dupe_use_start_date:
+            def add_url_check(new_value, scope_by_date):
+                if scope_by_date:
                     url_paths.append(f'(ticket_url = {ph} AND start_date = {ph})')
-                    url_params += [event['ticket_url'], event.get('start_date')]
+                    url_params.extend([new_value, event.get('start_date')])
+                    url_paths.append(f'(event_url = {ph} AND start_date = {ph})')
+                    url_params.extend([new_value, event.get('start_date')])
                 else:
                     url_paths.append(f'ticket_url = {ph}')
-                    url_params.append(event['ticket_url'])
-            if dupe_use_event_url and event.get('event_url'):
-                if dupe_use_start_date:
-                    url_paths.append(f'(event_url = {ph} AND start_date = {ph})')
-                    url_params += [event['event_url'], event.get('start_date')]
-                else:
+                    url_params.append(new_value)
                     url_paths.append(f'event_url = {ph}')
-                    url_params.append(event['event_url'])
+                    url_params.append(new_value)
+            if dupe_use_ticket_url and event.get('ticket_url'):
+                add_url_check(event['ticket_url'], dupe_use_start_date)
+            if dupe_use_event_url and event.get('event_url'):
+                add_url_check(event['event_url'], dupe_use_start_date)
 
             if url_paths:
                 c.execute(f'''SELECT id, name, start_date, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url, status
