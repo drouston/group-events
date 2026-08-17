@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+
+    <meta property="og:title" content="{{ title }}">
+    <meta property="og:description" content="{{ display_date }}{% if event.venue %} @ {{ event.venue }}{% endif %}">
+    <meta property="og:image" content="{{ image_url }}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:url" content="{{ canonical_url }}">
+    <meta property="og:type" content="website">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ title }}">
+    <meta name="twitter:description" content="{{ display_date }}{% if event.venue %} @ {{ event.venue }}{% endif %}">
+    <meta name="twitter:image" content="{{ image_url }}">
+
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #f8f9fa;
+            color: #222;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .header a {
+            color: #fff;
+            text-decoration: none;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .card-image {
+            width: 100%;
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            display: block;
+        }
+
+        .event-name {
+            font-size: 26px;
+            font-weight: 700;
+            margin: 20px 0 8px;
+            line-height: 1.3;
+        }
+
+        .event-meta {
+            font-size: 16px;
+            color: #444;
+            margin-bottom: 4px;
+        }
+
+        .event-meta.venue {
+            font-weight: 600;
+            color: #222;
+        }
+
+        .event-price {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 4px 10px;
+            background: #eef0ff;
+            color: #4c3a94;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .event-description {
+            margin-top: 18px;
+            font-size: 15px;
+            line-height: 1.5;
+            color: #333;
+        }
+
+        .actions {
+            margin-top: 28px;
+        }
+
+        .actions-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #888;
+            margin-bottom: 10px;
+        }
+
+        .btn-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 22px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 12px 18px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .btn-calendar {
+            background: #fff;
+            color: #4c3a94;
+            border: 1.5px solid #667eea;
+        }
+
+        .btn-tickets {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            width: 100%;
+            justify-content: center;
+            padding: 15px 18px;
+            font-size: 16px;
+        }
+
+        .footer-link {
+            display: block;
+            margin-top: 24px;
+            font-size: 14px;
+            color: #667eea;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <a href="/">&larr; {{ event.city }} Event List</a>
+    </div>
+
+    <div class="container">
+        <img class="card-image" src="{{ image_url }}" alt="{{ title }}">
+
+        <div class="event-name">{{ event.name }}</div>
+        {% if display_date %}<div class="event-meta">{{ display_date }}</div>{% endif %}
+        {% if doors_time %}<div class="event-meta">Doors: {{ doors_time }}</div>{% endif %}
+        {% if event.venue %}
+            <div class="event-meta venue">{{ event.venue }}{% if event.location %} &mdash; {{ event.location }}{% endif %}</div>
+        {% endif %}
+        {% if event.price %}<div class="event-price">{{ event.price }}</div>{% endif %}
+        {% if event.description %}<div class="event-description">{{ event.description }}</div>{% endif %}
+
+        <div class="actions">
+            {% if ics_url or google_calendar_url %}
+                <div class="actions-label">Add to calendar</div>
+                <div class="btn-row">
+                    {% if google_calendar_url %}
+                        <a class="btn btn-calendar" href="{{ google_calendar_url }}" target="_blank" rel="noopener">Google Calendar</a>
+                    {% endif %}
+                    {% if ics_url %}
+                        <a class="btn btn-calendar" href="{{ ics_url }}">Apple / Outlook (.ics)</a>
+                    {% endif %}
+                </div>
+            {% endif %}
+
+            {% if ticket_url %}
+                <a class="btn btn-tickets" href="{{ ticket_url }}" target="_blank" rel="noopener">Get Tickets &raquo;</a>
+            {% endif %}
+        </div>
+
+        <a class="footer-link" href="/">See all upcoming events &rarr;</a>
+    </div>
+</body>
+</html>

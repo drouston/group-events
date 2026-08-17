@@ -115,7 +115,8 @@ def init_db():
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
                       duplicate_of_id INTEGER,
-                      cancel_flagged_at TEXT)''')
+                      cancel_flagged_at TEXT,
+                      image_url TEXT)''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id SERIAL PRIMARY KEY,
@@ -146,8 +147,9 @@ def init_db():
                       sold_out BOOLEAN DEFAULT FALSE,
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
-                      duplicate_of_id INTEGER)''')
-        
+                      duplicate_of_id INTEGER,
+                      image_url TEXT)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS scrape_stats
                      (id SERIAL PRIMARY KEY,
                       scrape_date TEXT,
@@ -186,7 +188,8 @@ def init_db():
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
                       duplicate_of_id INTEGER,
-                      cancel_flagged_at TEXT)''')
+                      cancel_flagged_at TEXT,
+                      image_url TEXT)''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -217,8 +220,9 @@ def init_db():
                       sold_out BOOLEAN DEFAULT FALSE,
                       date_changed BOOLEAN DEFAULT FALSE,
                       openers TEXT,
-                      duplicate_of_id INTEGER)''')
-        
+                      duplicate_of_id INTEGER,
+                      image_url TEXT)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS scrape_stats
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       scrape_date TEXT,

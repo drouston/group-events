@@ -249,8 +249,11 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
-        "load_more_id": "loadMoreEvents",
-        "unreliable_urls": True
+        "load_more_id": "loadMoreEvents"
+        # unreliable_urls removed 2026-08-16: the site's per-event URL slugs (e.g.
+        # /events/detail/grupo-duelo) are unique despite the generic anchor text, and the
+        # inline-links fix now surfaces them correctly instead of relying on positional
+        # anchor-text pairing.
     },
     "nrg_park": {
         "name": "NRG Park",
@@ -383,6 +386,11 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
+        # Added 2026-08-16: ticket_url is always the same generic ticketing-portal page
+        # (never per-event) — event_url is the real per-show link. Left non-null, the shared
+        # value made detect_url_date_conflicts() flag nearly every event on this venue as a
+        # date-drift duplicate of whichever row had the lowest id.
+        "unreliable_urls": "ticket_url",
     },
     "docs_jazz": {
         "name": "Doc's Jazz Club",
@@ -1887,8 +1895,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         # Some venues' per-event links can't be trusted — force the untrustworthy one(s)
         # to null so the calendar's fallback chain (ticket_url -> event_url -> venue_url)
         # lands on the venue's generic events page instead of a wrong specific one.
-        # True nulls both (e.g. Toyota Center's identical "More Info & Ticket Options"
-        # anchor text on every event, which the LLM can't reliably pair to the right show).
+        # True nulls both, for venues where every event's link carries no reliable
+        # distinguishing signal at all (identical anchor text AND a shared/generic href).
         # A field name ('ticket_url' or 'event_url') nulls only that one, for venues where
         # just one field is the problem (e.g. Doc's Jazz Club's event_url — a generic
         # vanity link sometimes misattributed to a neighboring event, sometimes a shared

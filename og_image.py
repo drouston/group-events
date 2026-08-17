@@ -22,13 +22,82 @@ import io
 import os
 import math
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
-from flask import Blueprint, send_file, render_template, url_for, redirect
+from flask import Blueprint, Response, request, send_file, render_template, url_for, redirect
+from icalendar import Calendar, Event as ICalEvent
 
 from PIL import Image, ImageDraw, ImageFont
 
 event_card_bp = Blueprint("event_card", __name__)
+
+CENTRAL = ZoneInfo("America/Chicago")
+
+# Default duration assumed for an event when the source page never gave us an
+# end_time -- long enough to cover a typical show without claiming precision we
+# don't have.
+DEFAULT_DURATION = timedelta(hours=3)
+
+
+def _event_datetimes(event):
+    """(start, end) as tz-aware America/Chicago datetimes, or (None, None) if
+    start_date is missing/unparseable. When start_time is missing too, this is
+    an all-day event -- returned as naive dates (icalendar treats a `date`
+    value, not `datetime`, as an all-day VEVENT) rather than guessing a time."""
+    start_date = event.get("start_date")
+    if not start_date:
+        return None, None
+    try:
+        date_part = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None, None
+
+    start_time = event.get("start_time")
+    if not start_time:
+        return date_part, date_part + timedelta(days=1)
+
+    try:
+        hh, mm = start_time.split(":")[:2]
+        start_dt = datetime(date_part.year, date_part.month, date_part.day,
+                             int(hh), int(mm), tzinfo=CENTRAL)
+    except (ValueError, TypeError):
+        return date_part, date_part + timedelta(days=1)
+
+    end_time = event.get("end_time")
+    end_dt = None
+    if end_time:
+        try:
+            eh, em = end_time.split(":")[:2]
+            end_dt = datetime(date_part.year, date_part.month, date_part.day,
+                               int(eh), int(em), tzinfo=CENTRAL)
+            if end_dt <= start_dt:
+                end_dt += timedelta(days=1)  # e.g. 11pm - 1am
+        except (ValueError, TypeError):
+            end_dt = None
+    if end_dt is None:
+        end_dt = start_dt + DEFAULT_DURATION
+
+    return start_dt, end_dt
+
+
+def _google_calendar_url(event, start, end):
+    if start is None:
+        return None
+    fmt = "%Y%m%d" if not isinstance(start, datetime) else "%Y%m%dT%H%M%S"
+    dates = f"{start.strftime(fmt)}/{end.strftime(fmt)}"
+    location = event.get("venue") or ""
+    if event.get("location"):
+        location = f"{location} ({event['location']})"
+    params = {
+        "action": "TEMPLATE",
+        "text": event.get("name") or "Event",
+        "dates": dates,
+        "location": location,
+        "details": event.get("description") or "",
+    }
+    return "https://calendar.google.com/calendar/render?" + urlencode(params)
 
 
 def _format_share_date(start_date):
@@ -386,6 +455,17 @@ def homepage_card_image():
     return send_file(buf, mimetype="image/png")
 
 
+def _preview_image_url(event, event_id):
+    """Real event photo if one's stored on the row (e.g. a private-event invite
+    flyer), otherwise the generated retro share card. `image_url` is stored as a
+    root-relative path (e.g. /static/uploads/foo.jpeg), not an absolute URL, so
+    it's resolved against the current request's host here rather than at
+    insert time -- keeps it correct across both houeventlist.com/atxeventlist.com."""
+    if event.get("image_url"):
+        return request.url_root.rstrip("/") + event["image_url"]
+    return url_for("event_card.event_card_image", event_id=event_id, _external=True)
+
+
 @event_card_bp.route("/e/<int:event_id>")
 def share_redirect(event_id):
     event = _get_event_by_id(event_id)
@@ -407,7 +487,98 @@ def share_redirect(event_id):
         "share_redirect.html",
         title=title,
         description=f"{event.get('venue', '')} -- {event.get('start_date', '')}",
-        image_url=url_for("event_card.event_card_image", event_id=event_id, _external=True),
+        image_url=_preview_image_url(event, event_id),
         canonical_url=url_for("event_card.share_redirect", event_id=event_id, _external=True),
         redirect_url=redirect_url,
+    )
+
+
+def _format_full_date(start_date, start_time):
+    """'Friday, August 21' (+ ' at 7:00 PM' if a time is known) for the detail page."""
+    if not start_date:
+        return ""
+    try:
+        d = datetime.strptime(start_date, "%Y-%m-%d")
+    except ValueError:
+        return start_date
+    text = d.strftime("%A, %B %-d")
+    if start_time:
+        try:
+            hh, mm = start_time.split(":")[:2]
+            t = datetime(2000, 1, 1, int(hh), int(mm))
+            text += t.strftime(" at %-I:%M %p")
+        except (ValueError, TypeError):
+            pass
+    return text
+
+
+@event_card_bp.route("/e/<int:event_id>/details")
+def event_details(event_id):
+    """Lingering event-detail page: unlike /e/<event_id> (which previews then
+    auto-redirects straight to tickets), this page stays put and shows the full
+    details plus add-to-calendar options -- for sharing an event itself, not
+    just routing someone to buy a ticket."""
+    event = _get_event_by_id(event_id)
+    if not event:
+        return redirect("/calendar")
+
+    branding = _city_branding()
+    name = event.get("name") or f"{branding['name']} Event"
+    venue = event.get("venue", "")
+    title = f"{name} - {_format_share_date(event.get('start_date'))} @ {venue}" if venue else name
+    ticket_url = event.get("ticket_url") or event.get("event_url") or event.get("venue_url")
+
+    start, end = _event_datetimes(event)
+
+    return render_template(
+        "event_details.html",
+        event=event,
+        title=title,
+        display_date=_format_full_date(event.get("start_date"), event.get("start_time")),
+        doors_time=event.get("doors_time"),
+        ticket_url=ticket_url,
+        image_url=_preview_image_url(event, event_id),
+        canonical_url=url_for("event_card.event_details", event_id=event_id, _external=True),
+        ics_url=url_for("event_card.event_ics", event_id=event_id, _external=True) if start else None,
+        google_calendar_url=_google_calendar_url(event, start, end) if start else None,
+    )
+
+
+@event_card_bp.route("/e/<int:event_id>/event.ics")
+def event_ics(event_id):
+    event = _get_event_by_id(event_id)
+    if not event:
+        return redirect("/calendar")
+
+    start, end = _event_datetimes(event)
+    if start is None:
+        return redirect(url_for("event_card.event_details", event_id=event_id))
+
+    cal = Calendar()
+    cal.add("prodid", "-//Group Events//houeventlist.com//")
+    cal.add("version", "2.0")
+
+    vevent = ICalEvent()
+    vevent.add("summary", event.get("name") or "Event")
+    vevent.add("dtstart", start)
+    vevent.add("dtend", end)
+    vevent.add("uid", f"event-{event_id}@houeventlist.com")
+    vevent.add("dtstamp", datetime.now(CENTRAL))
+    location = event.get("venue") or ""
+    if event.get("location"):
+        location = f"{location} ({event['location']})"
+    if location:
+        vevent.add("location", location)
+    description_parts = [p for p in [
+        event.get("description"),
+        event.get("ticket_url") or event.get("event_url"),
+    ] if p]
+    if description_parts:
+        vevent.add("description", "\n\n".join(description_parts))
+    cal.add_component(vevent)
+
+    return Response(
+        cal.to_ical(),
+        mimetype="text/calendar",
+        headers={"Content-Disposition": f'inline; filename="event-{event_id}.ics"'},
     )
