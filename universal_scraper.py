@@ -321,6 +321,14 @@ VENUES = {
         "wait_time": 5,
         "scroll_count": 12,
         "pagination_sentinel": ".paginationControls",
+        # Confirmed 2026-08-17 via the dupe_use_start_date verification procedure (CLAUDE.md):
+        # ticket_url is unique per occurrence, every shared-URL case found was the date-drift
+        # signature (same name, wrong date), never a reused link across different shows.
+        "dupe_use_start_date": False,
+        # This venue runs multiple distinct showtimes nightly (Comedy Showcase 7/9/11pm, Joe
+        # List 7PM/9PM) with near-identical titles — safe to treat a differing start_time as
+        # proof of separate events here, unlike most venues.
+        "dupe_check_start_time": True,
     },
     "hotel_lucine": {
         "name": "Hotel Lucine",
@@ -1923,6 +1931,12 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         # event_url across different real dates, disproving that assumption, so the safe default
         # is now uniform across both fields.
         event['dupe_use_start_date'] = venue.get('dupe_use_start_date', True)
+        # Safe default False: only for venues confirmed to run multiple distinct shows with
+        # similar titles on the same night (e.g. The Secret Group's 7pm/9pm/11pm showcases) —
+        # for those, a differing start_time is treated as proof of separate events even when
+        # names are near-identical. Wrong for most venues, where one show per night is the
+        # norm and a real duplicate could coincidentally have a slightly different time typo.
+        event['dupe_check_start_time'] = venue.get('dupe_check_start_time', False)
         # General per-venue URL cleanup: a regex pattern matched against the END of
         # ticket_url/event_url and stripped out. Added for Improv Houston, whose event-page
         # links embed a trailing numeric segment that looks like a per-event ID but isn't —
@@ -2206,7 +2220,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
             # Partial duplicate check: same venue + start_date, similar name
             # Only check against pending/approved — excluding possible_duplicate prevents cascade chains
-            c.execute(f'''SELECT id, name FROM events
+            c.execute(f'''SELECT id, name, start_time FROM events
                             WHERE venue = {ph} AND start_date = {ph}
                             AND status IN ('pending', 'approved') ''',
                         (event['venue'], event.get('start_date')))
@@ -2224,7 +2238,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
             # to a human either way, so a flag would just re-add it to a review surface
             # (possible_duplicate) that auto-approve was specifically meant to avoid.
             if not event.get('auto_approve'):
-                for ex_id, ex_name in existing:
+                for ex_id, ex_name, ex_time in existing:
+                    if event.get('dupe_check_start_time'):
+                        new_time = event.get('start_time')
+                        if new_time and ex_time and new_time != ex_time:
+                            continue
                     similarity = SequenceMatcher(
                         None, strip_opener_clause(event['name'].lower()), strip_opener_clause(ex_name.lower())
                     ).ratio()
