@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 import json
 import sqlite3
 import os
@@ -9,6 +10,13 @@ from difflib import SequenceMatcher
 CENTRAL = ZoneInfo('America/Chicago')
 
 app = Flask(__name__)
+# Railway's edge terminates TLS and forwards to the app over plain HTTP, setting
+# X-Forwarded-Proto to indicate the original scheme -- without this, request.scheme /
+# url_root / every url_for(..., _external=True) call reports http instead of https
+# (still works via the 301 redirect, but it's an unnecessary hop and some stricter
+# link-preview crawlers don't follow redirects for og:image). One hop of trust: Railway's
+# own edge is the only proxy in front of this app.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Database configuration - use PostgreSQL if DATABASE_URL exists (production), else SQLite (local)
 DATABASE_URL = os.environ.get('DATABASE_URL')
