@@ -158,7 +158,17 @@ VENUES = {
         # sentinel gets scrolled into view as it moves down the page with each new batch.
         "scroll_count": 12,
         "pagination_sentinel": ".chakra-spinner",
-        "venue_instruction": "Extract all events. For each event, populate the 'location' field with the specific room: 'Main Stage', 'Bronze Peacock', or 'Foundation Room'. If no room is specified, use 'Main Stage'."
+        "venue_instruction": "Extract all events. For each event, populate the 'location' field with the specific room: 'Music Hall', 'The Bronze Peacock', or 'Foundation Room'. If no room is specified, use 'Music Hall'.",
+        # Confirmed 2026-09-24: this site has no per-event detail pages, so since the 08-14
+        # ticket/event URL prompt split, event_url always comes back as the generic /shows
+        # listing — same class as Punch Line's event_url. That one non-unique value (shared
+        # across 88 rows / 74 dates) let save_to_database's cross-field URL-match query match
+        # the wrong row via LIMIT 1 and abandon the real ticket_url match, and let
+        # detect_url_date_conflicts() cross-link unrelated shows sharing it on different dates
+        # — together responsible for ~85% of this venue's possible_duplicate backlog. Nulling
+        # it forces dedup onto ticket_url (Ticketmaster, confirmed unique per event — no shared
+        # ticket_url across >1 start_date found).
+        "unreliable_urls": "event_url",
     },
     "smart_financial": {
         "name": "Smart Financial Centre",
@@ -223,7 +233,10 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 6,
-        "scroll_count": 5
+        "scroll_count": 5,
+        # Confirmed 2026-09-23: nightly Showcase + Open Mic (or Late Showcase) at different
+        # times with near-identical titles — same false-positive class as Secret Group (ce1dcdf).
+        "dupe_check_start_time": True,
     },
     "axelrad": {
         "name": "Axelrad Beer Garden",
@@ -256,13 +269,29 @@ VENUES = {
         # anchor-text pairing.
     },
     "nrg_park": {
-        "name": "NRG Park",
-        "url": "https://www.nrgpark.com/events-tickets/",
+        # Renamed 2026-10-01: NRG's naming-rights deal lapsed and the complex reverted to its
+        # earlier Reliant branding — confirmed live, not a rumor: nrgpark.com's own event pages
+        # already redirect to reliantpark.com, and the old site is being kept up only as a
+        # redirect shim. "NRG Park" kept in aliases since in-flight sources (the city ICS
+        # calendar, old cached links) will keep using the old name for a while.
+        "name": "Reliant Park",
+        "url": "https://www.reliantpark.com/events-tickets/",
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
-        "allows_multi_day": True
+        "allows_multi_day": True,
+        "aliases": ["NRG Park"],
+        # Distinct buildings within the complex, not alternate names for the complex itself —
+        # the city ICS calendar's per-event venue (derived from the ICS LOCATION field, see
+        # scrape_google_ics) reports the specific building, not "Reliant Park"/"NRG Park", so
+        # without this the ICS skip-filter's alias check never recognizes them as already
+        # covered by this venue and inserts them as untracked separate "venues" (confirmed:
+        # this is exactly how 6 Texans-game/Karol-G rows ended up live-duplicated under "NRG
+        # Stadium"/"NRG Center" before this fix). Both eras listed since the ICS feed's own
+        # LOCATION text hasn't caught up to the Reliant rename yet.
+        "sub_venues": ["Reliant Center", "Reliant Stadium", "Reliant Arena",
+                       "NRG Stadium", "NRG Center", "NRG Arena", "NRG Astrodome"],
     },
     "houcalendar": {
         "name": "Houston Cultural Events Calendar",
@@ -294,6 +323,17 @@ VENUES = {
         "event_type": "comedy",
         "venue_instruction": "Extract all comedy shows. This is a comedy club.",
         "scrolls": 5,
+        # Added 2026-08-19: event_url is always the same generic /shows listing page (never
+        # per-event) — same class of bug as Miller Outdoor Theatre's ticket_url, and it made
+        # detect_url_date_conflicts() flag nearly every event here as a date-drift duplicate
+        # of whichever row had the lowest id. ticket_url is the reliable per-event field.
+        "unreliable_urls": "event_url",
+        # Confirmed 2026-08-19 via the dupe_use_start_date verification procedure (CLAUDE.md):
+        # ticket_url is unique per occurrence, no case of a reused link across different shows.
+        "dupe_use_start_date": False,
+        # Confirmed 2026-09-23: same headliner often runs an early + late set (or two different
+        # headliners) on one night — same false-positive class as Secret Group (ce1dcdf).
+        "dupe_check_start_time": True,
     },
     "shady_acres": {
         "name": "Shady Acres Saloon",
@@ -312,6 +352,10 @@ VENUES = {
         "state": "TX",
         "wait_time": 6,
         "scroll_count": 5,
+        # Confirmed 2026-09-23: runs a distinct Early Show (~18:00) and Late Show (~20:30) most
+        # nights with different artists — the exact false-positive class dupe_check_start_time
+        # (ce1dcdf) was built for; already the canonical example in CLAUDE.md's ML notes.
+        "dupe_check_start_time": True,
     },
     "secret_group": {
         "name": "The Secret Group",
@@ -576,6 +620,9 @@ VENUES = {
         "city": "Austin",
         "state": "TX",
         "wait_time": 5,
+        # Confirmed 2026-09-23: multiple distinct headliners/sets on the same night at
+        # different times — same false-positive class as Secret Group (ce1dcdf).
+        "dupe_check_start_time": True,
     },
     "velveeta_room": {
         "name": "The Velveeta Room",
@@ -1281,16 +1328,28 @@ def scrape_google_ics(venue_config, mode='daily'):
         # and would create duplicates. Compare against all non-ICS venue names and known aliases
         # (fuzzy matching alone misses nicknames like "Woodlands Pavilion" for "Cynthia Woods
         # Mitchell Pavilion" that don't share enough characters to clear the ratio threshold).
+        # sub_venues covers the opposite case from aliases: distinct buildings within a complex
+        # (e.g. Reliant Stadium within Reliant Park) that the ICS feed's LOCATION field reports
+        # by their own specific name — low string similarity to the complex's own name, so they
+        # need to be listed explicitly rather than caught by the fuzzy ratio check.
+        #
+        # Checked against the full LOCATION text too, not just its first comma-separated
+        # segment (venue_lower) — some calendar entries put the venue name in a different
+        # position (e.g. a street address first, venue name second), which venue_lower alone
+        # would miss entirely even though the venue name is right there in the location string.
         venue_lower = venue.lower()
+        location_lower = location.lower()
         scraped_names = []
         for v in VENUES.values():
             if v.get('ical_url'):
                 continue
             scraped_names.append(v['name'].lower())
             scraped_names.extend(a.lower() for a in v.get('aliases', []))
+            scraped_names.extend(s.lower() for s in v.get('sub_venues', []))
         if any(
             venue_lower in sn or sn in venue_lower or
-            SequenceMatcher(None, venue_lower, sn).ratio() >= 0.8
+            SequenceMatcher(None, venue_lower, sn).ratio() >= 0.8 or
+            (location_lower and sn in location_lower)
             for sn in scraped_names
         ):
             print(f"  ↷ Skipping (already scraped venue): {venue} — {name.strip()}")
@@ -1469,8 +1528,8 @@ Fields to extract:
 - end_time: HH:MM format (24-hour) or null
   DO NOT apply any timezone conversion. Keep times exactly as shown.
 - price: Extract if mentioned, otherwise null
-- ticket_url: Full URL to the external ticketing page if present — typically a DIFFERENT domain than {venue_domain} (a ticketing partner like Ticketmaster, Prekindle, Eventbrite, AXS, Square), otherwise null
-- event_url: Full URL to the event's own detail page on the venue's OWN site if present (same domain as {venue_domain}, distinct from ticket_url), otherwise null
+- ticket_url: if external ticketing url link is present, otherwise null
+- event_url: if present, otherwise null
 - description: Brief description
 - genre: Music genre/category if discernible
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
@@ -1724,6 +1783,28 @@ def parse_mucky_duck_html(html):
 
     return {'events': events}
 
+def get_toyota_carousel_tickets(html):
+    """Map event name -> real ticket_url from Toyota Center's "on sale now" carousel.
+
+    The carousel is a separate widget from the main events grid, with its own clean
+    name+ticket-link pairing per item — unlike the main grid, which has no ticket link at
+    all for most concerts. The LLM extracting the whole flattened page text has to notice a
+    name mentioned once in the main grid is the same event as a (correctly-linked) mention
+    later in the carousel, across dozens of other events — confirmed unreliable in practice
+    (e.g. MANÁ came back with Don Omar's real link, John Summit and Leanne Morgan both came
+    back with Teddy Swims'). Parsing the carousel directly sidesteps that merge entirely.
+    """
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'html.parser')
+    tickets = {}
+    for item in soup.select('.owl-item .m-venueframework-eventslist__item'):
+        title_el = item.select_one('.m-eventItem__title')
+        ticket_el = item.select_one('a.tickets[href]')
+        if title_el and ticket_el:
+            tickets[title_el.get_text(strip=True).lower()] = ticket_el['href']
+    return tickets
+
 def pre_filter_dates(venue_name, page_text):
     """Extract and log new dates found on page vs DB - informational only"""
     import re
@@ -1893,6 +1974,11 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
 
+    # Toyota Center's ticket_url can't be trusted from the LLM extraction at all (see
+    # get_toyota_carousel_tickets) — rebuilt here directly from the carousel instead, once
+    # per scrape rather than once per event.
+    toyota_tickets = get_toyota_carousel_tickets(html) if venue_key == 'toyota_center' else None
+
     for event in events:
         event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
         event['venue'] = venue['name']
@@ -1915,6 +2001,24 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             event['event_url'] = None
         elif unreliable in ('ticket_url', 'event_url'):
             event[unreliable] = None
+        # Toyota Center: NBA games have their own reliable, correctly-paired ticket link
+        # directly in the main grid (tix.axs.com, confirmed unique per game) — only concerts
+        # without one of those have to be cross-checked against the carousel, so this only
+        # touches events whose extracted ticket_url already has the specific confirmed-
+        # unreliable shape (a shop.axs.com short link, which is what a concert gets when the
+        # LLM borrows the wrong carousel entry). Replaced with the carousel's verified value
+        # if this event is in it, otherwise nulled — the LLM's own guess for those turned out
+        # to be another event's real link, not just missing, so leaving it in place would be
+        # worse than nulling it. Matched by containment, not equality — the carousel's own
+        # tagline (e.g. "Vivir Sin Aire Tour") only exists in the carousel's markup, not the
+        # main grid, so the LLM's final name ("MANÁ Vivir Sin Aire Tour") won't equal the
+        # bare carousel title ("MANÁ") even though it's unambiguously the same event.
+        if toyota_tickets is not None and event.get('ticket_url') and 'shop.axs.com' in event['ticket_url']:
+            event_name_lower = event.get('name', '').strip().lower()
+            event['ticket_url'] = next(
+                (href for title, href in toyota_tickets.items() if title in event_name_lower),
+                None
+            )
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
@@ -2069,7 +2173,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
             venue_auto_approve = auto_approve or auto_approve_map.get(event['venue'], False) or event.get('auto_approve', False)
 
             # Exact duplicate check: name + start_date + venue + start_time
-            c.execute(f'''SELECT id FROM events
+            c.execute(f'''SELECT id, ticket_url, event_url FROM events
                             WHERE name = {ph} AND start_date = {ph}
                             AND venue = {ph}
                             AND (start_time = {ph} OR (start_time IS NULL AND {ph} IS NULL))
@@ -2077,7 +2181,26 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             LIMIT 1''',
                         (event['name'], event.get('start_date'), event['venue'],
                         event.get('start_time'), event.get('start_time')))
-            if c.fetchone():
+            exact_match = c.fetchone()
+            if exact_match:
+                # Backfill ticket_url/event_url if this exact-match row is still missing one
+                # a later scrape now has (e.g. Toyota Center's AXS ticket_url, which only
+                # exists in the on-sale-now carousel and so is genuinely null on first scrape).
+                # Without this, a show whose name/date/time never change would hit this skip
+                # every single day and the real link would never get written, even once it
+                # becomes available — unlike start_time drift, which the near-match/URL-match
+                # paths below already self-heal.
+                ex_id, ex_ticket_url, ex_event_url = exact_match
+                backfill = {}
+                if event.get('ticket_url') and not ex_ticket_url:
+                    backfill['ticket_url'] = event['ticket_url']
+                if event.get('event_url') and not ex_event_url:
+                    backfill['event_url'] = event['event_url']
+                if backfill:
+                    set_clause = ', '.join(f'{k} = {ph}' for k in backfill)
+                    c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
+                              list(backfill.values()) + [ex_id])
+                    print(f"  ↻ Backfilled ({', '.join(backfill)}): {event['name']}")
                 skipped += 1
                 continue
 
@@ -2341,28 +2464,36 @@ def detect_existing_duplicates(dry_run=False):
     from difflib import SequenceMatcher
     from collections import defaultdict
 
+    # Mirrors the same per-venue dupe_check_start_time toggle save_to_database's partial-match
+    # check uses (see ce1dcdf) — without it, this sweep re-flags multi-showtime venues (comedy
+    # clubs running distinct early/late sets) that were already carved out at insert time.
+    dupe_check_start_time_map = {v['name']: v.get('dupe_check_start_time', False) for v in VENUES.values()}
+
     conn = get_db_connection()
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
 
     # Only scan active events — skip already-flagged, rejected, canceled
-    c.execute('''SELECT id, name, start_date, venue FROM events
+    c.execute('''SELECT id, name, start_date, venue, start_time FROM events
                  WHERE status IN ('pending', 'approved')
                  ORDER BY id ASC''')
     rows = c.fetchall()
 
     groups = defaultdict(list)
-    for event_id, name, start_date, venue in rows:
-        groups[(venue, start_date)].append((event_id, name))
+    for event_id, name, start_date, venue, start_time in rows:
+        groups[(venue, start_date)].append((event_id, name, start_time))
 
     flagged = 0
     for (venue, start_date), group in groups.items():
         if len(group) < 2:
             continue
+        check_start_time = dupe_check_start_time_map.get(venue, False)
         for i in range(len(group)):
             for j in range(i + 1, len(group)):
-                id_a, name_a = group[i]
-                id_b, name_b = group[j]
+                id_a, name_a, time_a = group[i]
+                id_b, name_b, time_b = group[j]
+                if check_start_time and time_a and time_b and time_a != time_b:
+                    continue
                 similarity = SequenceMatcher(None, name_a.lower(), name_b.lower()).ratio()
                 if similarity >= 0.5:
                     # Keep the older event (lower id); flag the newer one
@@ -2382,6 +2513,32 @@ def detect_existing_duplicates(dry_run=False):
     print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} possible duplicates")
     print(f"{'='*60}")
 
+def _looks_recurring(dates):
+    """True if a list of ISO date strings forms a regular weekly or daily pattern — the shape
+    a legitimate recurring class/show produces (Hotel Lucine's daily Sunset Pilates, weekly
+    Sunday Yoga), as opposed to the essentially arbitrary small offsets a genuine date-drift
+    bug produces (the Heights Theater case this function was originally built for). Same-weekday
+    alone requires 3+ dates — on just 2 dates it's too weak a signal, since a bug that misreads
+    the wrong row of a weekly calendar grid would also land on the same weekday a clean number
+    of weeks off.
+    """
+    try:
+        d = sorted({datetime.strptime(x, '%Y-%m-%d') for x in dates})
+    except (ValueError, TypeError):
+        return False
+    if len(d) < 2:
+        return False
+    gaps = {(d[i + 1] - d[i]).days for i in range(len(d) - 1)}
+    if len(d) == 2:
+        # A single gap is trivially "constant" — only trust it if it's a recognizable
+        # recurring interval (daily or weekly), not just whatever the one gap happens to be.
+        return gaps in ({1}, {7})
+    if len(gaps) == 1 and gaps != {0}:
+        return True
+    if len(d) >= 3 and len({x.weekday() for x in d}) == 1:
+        return True
+    return False
+
 def detect_url_date_conflicts(dry_run=False):
     """Scan for active events sharing a ticket_url or event_url with another active event at
     the same venue but a DIFFERENT start_date — the shape of bug that let 51 duplicate rows
@@ -2397,6 +2554,16 @@ def detect_url_date_conflicts(dry_run=False):
     all). Flags the newer row as possible_duplicate rather than resolving anything automatically
     — the correct date isn't decidable from the DB alone (see the Willow Avalon/Heights cleanup:
     the drift direction wasn't consistent, so "oldest wins" would sometimes be wrong).
+
+    A shared URL can also mean a legitimate recurring class/show (Hotel Lucine's Sunset Pilates,
+    Dan Electro's weekly Karaoke) rather than a drift bug — the `recurring` column disambiguates:
+    'no' keeps this function's flagging behavior unchanged (safety valve for a drift bug that
+    coincidentally looks regular); 'yes' (human-confirmed) is propagated to any new same-URL rows
+    and skips flagging entirely, which is how a freshly-scraped instance of an already-confirmed
+    series gets recognized immediately, without needing 2+ of its own dates to prove a pattern —
+    no separate registry table needed since this function already re-scans the whole table weekly;
+    otherwise, a group whose dates form a regular pattern (_looks_recurring) gets stamped
+    'possible' instead of flagged, surfaced for a human to confirm via the review dashboard.
     """
     from collections import defaultdict
 
@@ -2404,28 +2571,60 @@ def detect_url_date_conflicts(dry_run=False):
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
 
-    c.execute('''SELECT id, name, venue, start_date, ticket_url, event_url
+    if DATABASE_URL:
+        c.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS recurring TEXT")
+
+    c.execute('''SELECT id, name, venue, start_date, ticket_url, event_url, recurring
                  FROM events
                  WHERE status IN ('pending', 'approved')
                  AND (ticket_url IS NOT NULL OR event_url IS NOT NULL)
                  ORDER BY id ASC''')
     rows = c.fetchall()
 
+    # A field a venue's own config has marked unreliable_urls (a generic listing page, never
+    # per-event — e.g. Punch Line's /shows, House of Blues' /shows) is never valid duplicate
+    # evidence, even on legacy rows scraped before that flag was set (which never got
+    # retroactively nulled). Without this, every event sharing that one non-unique value gets
+    # cross-linked to whichever row has the lowest id, regardless of date or name — confirmed
+    # responsible for the bulk of Punch Line's and House of Blues' possible_duplicate backlog.
+    unreliable_map = {v['name']: v.get('unreliable_urls') for v in VENUES.values()}
+
     groups = defaultdict(list)
-    for event_id, name, venue, start_date, ticket_url, event_url in rows:
-        if ticket_url:
-            groups[('ticket_url', venue, ticket_url)].append((event_id, name, start_date))
-        if event_url:
-            groups[('event_url', venue, event_url)].append((event_id, name, start_date))
+    for event_id, name, venue, start_date, ticket_url, event_url, recurring in rows:
+        unreliable = unreliable_map.get(venue)
+        if ticket_url and unreliable not in (True, 'ticket_url'):
+            groups[('ticket_url', venue, ticket_url)].append((event_id, name, start_date, recurring))
+        if event_url and unreliable not in (True, 'event_url'):
+            groups[('event_url', venue, event_url)].append((event_id, name, start_date, recurring))
 
     flagged = 0
+    recurring_stamped = 0
     seen_ids = set()
     for (field, venue, url), group in groups.items():
-        if len({r[2] for r in group}) < 2:
+        dates_in_group = {r[2] for r in group}
+        if len(dates_in_group) < 2:
             continue
+
+        recurring_values = {r[3] for r in group}
+        null_ids = [r[0] for r in group if r[3] is None]
+
+        if 'no' in recurring_values:
+            pass  # safety valve — fall through to normal flagging below, unchanged
+        elif 'yes' in recurring_values or _looks_recurring(dates_in_group):
+            new_value = 'yes' if 'yes' in recurring_values else 'possible'
+            if null_ids:
+                print(f"  ↻ {field} looks recurring ({new_value}): stamping {len(null_ids)} row(s) "
+                      f"for '{group[0][1]}' [{venue}] instead of flagging as duplicates")
+                if not dry_run:
+                    id_placeholders = ','.join(ph for _ in null_ids)
+                    c.execute(f'''UPDATE events SET recurring = {ph} WHERE id IN ({id_placeholders})''',
+                              [new_value] + null_ids)
+                recurring_stamped += len(null_ids)
+            continue
+
         group.sort(key=lambda r: r[0])
-        canonical_id, canonical_name, canonical_date = group[0]
-        for event_id, name, start_date in group[1:]:
+        canonical_id, canonical_name, canonical_date = group[0][0], group[0][1], group[0][2]
+        for event_id, name, start_date, _recurring in group[1:]:
             if start_date == canonical_date or event_id in seen_ids:
                 continue
             print(f"  ⚠ {field} shared across dates: #{event_id} '{name}' ({start_date}) "
@@ -2441,7 +2640,8 @@ def detect_url_date_conflicts(dry_run=False):
     conn.close()
 
     print(f"\n{'='*60}")
-    print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} URL/date conflicts")
+    print(f"{'[DRY RUN] ' if dry_run else ''}Flagged {flagged} URL/date conflicts, "
+          f"stamped {recurring_stamped} recurring row(s)")
     print(f"{'='*60}")
     return flagged
 

@@ -124,7 +124,14 @@ def init_db():
                       openers TEXT,
                       duplicate_of_id INTEGER,
                       cancel_flagged_at TEXT,
-                      image_url TEXT)''')
+                      image_url TEXT,
+                      recurring TEXT)''')
+
+        # Idempotent — CREATE TABLE IF NOT EXISTS above is a no-op against the already-existing
+        # production table, so this is the only thing that actually adds new columns to it. Run
+        # here (not just in universal_scraper.py) since this web service is deployed separately
+        # from the cron scraper and can't assume the scraper's own migration ran first.
+        c.execute('''ALTER TABLE events ADD COLUMN IF NOT EXISTS recurring TEXT''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id SERIAL PRIMARY KEY,
@@ -197,7 +204,15 @@ def init_db():
                       openers TEXT,
                       duplicate_of_id INTEGER,
                       cancel_flagged_at TEXT,
-                      image_url TEXT)''')
+                      image_url TEXT,
+                      recurring TEXT)''')
+
+        # SQLite's ADD COLUMN has no IF NOT EXISTS — check first (dev-only path, but kept
+        # consistent with the Postgres branch above for the same reason: CREATE TABLE IF NOT
+        # EXISTS is a no-op against an already-existing local dev DB).
+        c.execute("PRAGMA table_info(events)")
+        if 'recurring' not in {row[1] for row in c.fetchall()}:
+            c.execute('''ALTER TABLE events ADD COLUMN recurring TEXT''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -747,6 +762,27 @@ def do_reject_event(event_data):
     conn.commit()
     conn.close()
 
+def do_set_recurring(event_id, value):
+    conn = get_db_connection()
+    c = conn.cursor()
+    if DATABASE_URL:
+        c.execute('UPDATE events SET recurring = %s WHERE id = %s', (value, event_id))
+    else:
+        c.execute('UPDATE events SET recurring = ? WHERE id = ?', (value, event_id))
+    conn.commit()
+    conn.close()
+
+@app.route('/batch_set_recurring', methods=['POST'])
+def batch_set_recurring():
+    payload = request.json
+    value = payload.get('value')
+    if value not in ('yes', 'no'):
+        return jsonify({'status': 'error', 'message': "value must be 'yes' or 'no'"}), 400
+    events_data = payload.get('events', [])
+    for event_data in events_data:
+        do_set_recurring(event_data['id'], value)
+    return jsonify({'status': 'success', 'count': len(events_data)})
+
 def do_update_event(event_data):
     conn = get_db_connection()
     c = conn.cursor()
@@ -827,7 +863,7 @@ def filter_events():
     query = '''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                multi_day, venue, location, city, state,
                price, ticket_url, venue_url, description, genre, confidence, notes, status, created_at,
-               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id
+               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id, recurring
                FROM events WHERE 1=1'''
     params = []
     
@@ -916,7 +952,8 @@ def filter_events():
             'date_changed': row[24] if row[24] is not None else False,
             'openers': row[25],
             'event_url': row[26],
-            'duplicate_of_id': row[27]
+            'duplicate_of_id': row[27],
+            'recurring': row[28]
         }
         event['overall_confidence'] = calculate_confidence(event)
         events.append(event)
@@ -942,6 +979,9 @@ def filter_events():
     
     if filters.get('has_duplicates'):
         events = [e for e in events if e['status'] == 'possible_duplicate']
+
+    if filters.get('recurring_possible'):
+        events = [e for e in events if e['recurring'] == 'possible']
     
     return jsonify({'events': events, 'count': len(events)})
 

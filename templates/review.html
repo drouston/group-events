@@ -718,6 +718,7 @@
                     <option value="duplicates">Has Duplicates</option>
                     <option value="missing">Missing Data</option>
                     <option value="end_date">Has End Date</option>
+                    <option value="recurring_possible">Recurring? (possible)</option>
                 </select>
             </div>
 
@@ -781,12 +782,23 @@
             <button class="delete" onclick="batchDelete()">
                 🗑 Delete Selected
             </button>
+            <button class="approve" onclick="batchSetRecurring('yes')">
+                🔁 Confirm Recurring
+            </button>
+            <button class="reject" onclick="batchSetRecurring('no')">
+                🔁 Not Recurring
+            </button>
         </div>
     </div>
 
     <div id="dup-group-banner" style="display:none; background:#2a2a1a; border:1px solid #666; border-radius:6px; padding:8px 14px; margin-bottom:8px; font-size:13px; color:#ccc; align-items:center; gap:12px;">
         <span>⚠️ Showing duplicate group</span>
         <button onclick="clearDupGroupFilter()" style="background:#444; border:1px solid #666; color:#ccc; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:12px;">✕ Clear</button>
+    </div>
+
+    <div id="recurring-group-banner" style="display:none; background:#2a2a1a; border:1px solid #666; border-radius:6px; padding:8px 14px; margin-bottom:8px; font-size:13px; color:#ccc; align-items:center; gap:12px;">
+        <span>🔁 Showing recurring-series group</span>
+        <button onclick="clearRecurringGroupFilter()" style="background:#444; border:1px solid #666; color:#ccc; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:12px;">✕ Clear</button>
     </div>
 
     <div id="events-container">
@@ -832,6 +844,11 @@
         let dupGroupFilter = null;
         let dupGroupPreviousEvents = null; // filteredEvents snapshot before drill-in
 
+        // Recurring-series group filter — same pattern as dupGroupFilter, but grouped by
+        // shared ticket_url/event_url instead of duplicate_of_id
+        let recurringGroupFilter = null;
+        let recurringGroupPreviousEvents = null;
+
         // Column definitions drive the header, filter row, colgroup, and sorting.
         // type: checkbox | text | select | selectyn | actions
         const COLUMNS = [
@@ -844,6 +861,7 @@
             { key: 'location',   label: 'Location', type: 'text',     width: 140, sortable: true },
             { key: 'status',     label: 'Status',   type: 'select',   width: 160, sortable: true },
             { key: 'dup',        label: 'Dup',      type: 'selectyn', width: 95,  sortable: true },
+            { key: 'recurring',  label: 'Recur',    type: 'selectyn', width: 95,  sortable: true },
             { key: 'url',        label: 'URL',      type: 'selectyn', width: 85,  sortable: true },
             { key: null,         label: 'Actions',  type: 'actions',  width: 140, sortable: false },
         ];
@@ -907,6 +925,7 @@
                 has_duplicates: document.getElementById('filter-special').value === 'duplicates',
                 missing_data: document.getElementById('filter-special').value === 'missing',
                 has_end_date: document.getElementById('filter-special').value === 'end_date',
+                recurring_possible: document.getElementById('filter-special').value === 'recurring_possible',
                 sort_by: document.getElementById('sort-by').value,
                 sort_order: document.getElementById('sort-order').value
             };
@@ -942,6 +961,7 @@
 
         function matchesColumnFilters(event) {
             if (dupGroupFilter && !dupGroupFilter.has(event.id)) return false;
+            if (recurringGroupFilter && !recurringGroupFilter.has(event.id)) return false;
             for (const col of COLUMNS) {
                 if (!col.key) continue;
                 const fv = columnFilters[col.key];
@@ -1158,6 +1178,14 @@
                 ? `<span class="url-yes"><a href="${esc(event.ticket_url)}" target="_blank" rel="noopener">Yes 🔗</a></span>`
                 : '<span class="url-no">No</span>';
 
+            const recurringCell = event.recurring === 'possible'
+                ? `<span class="dup-flag" title="Looks recurring — click to review the group" onclick="filterRecurringGroup(event, ${event.id})">🔁 Possible</span>`
+                : event.recurring === 'yes'
+                ? '<span class="url-yes">✓ Yes</span>'
+                : event.recurring === 'no'
+                ? '<span class="url-no">No</span>'
+                : '<span class="url-no">—</span>';
+
             const needsReview = event.status === 'pending' || event.status === 'possible_duplicate';
             const canApprove = needsReview || event.status === 'canceled';
             const pillActions = needsReview
@@ -1186,6 +1214,7 @@
                         ${pillActions}
                     </td>
                     <td class="no-clip">${dupCell}</td>
+                    <td class="no-clip">${recurringCell}</td>
                     <td>${urlCell}</td>
                     <td class="no-clip">
                         <div class="row-actions">
@@ -1423,6 +1452,51 @@
             applyFilters();
         }
 
+        // Clicking the recurring pill filters to every event sharing that event's
+        // ticket_url or event_url — same shape as filterDuplicates, but grouped by shared
+        // URL instead of duplicate_of_id, since recurring instances aren't linked that way.
+        async function filterRecurringGroup(e, eventId) {
+            e.stopPropagation();
+
+            recurringGroupPreviousEvents = filteredEvents;
+
+            const response = await fetch('/api/filter_events', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ status: 'all', sort_by: 'start_date', sort_order: 'asc' })
+            });
+            const data = await response.json();
+            filteredEvents = data.events;
+
+            const clicked = filteredEvents.find(ev => ev.id === eventId);
+            const url = clicked && (clicked.ticket_url || clicked.event_url);
+
+            recurringGroupFilter = new Set(
+                filteredEvents
+                    .filter(ev => ev.venue === (clicked && clicked.venue) &&
+                        (ev.ticket_url === url || ev.event_url === url))
+                    .map(ev => ev.id)
+            );
+
+            columnFilters = {};
+            sortState = null;
+            currentPage = 1;
+            focusedRowIndex = 0;
+
+            const banner = document.getElementById('recurring-group-banner');
+            if (banner) banner.style.display = 'flex';
+
+            renderTable();
+        }
+
+        function clearRecurringGroupFilter() {
+            recurringGroupFilter = null;
+            recurringGroupPreviousEvents = null;
+            const banner = document.getElementById('recurring-group-banner');
+            if (banner) banner.style.display = 'none';
+            applyFilters();
+        }
+
         function updateStats(events) {
             document.getElementById('stat-total').textContent = events.length;
             document.getElementById('stat-low-confidence').textContent =
@@ -1448,6 +1522,11 @@
             dupGroupPreviousEvents = null;
             const banner = document.getElementById('dup-group-banner');
             if (banner) banner.style.display = 'none';
+
+            recurringGroupFilter = null;
+            recurringGroupPreviousEvents = null;
+            const recurringBanner = document.getElementById('recurring-group-banner');
+            if (recurringBanner) recurringBanner.style.display = 'none';
 
             applyFilters();
         }
@@ -1675,6 +1754,30 @@
                     row.style.background = '#ffebee';
                     setTimeout(() => removeRow(row), 500);
                 });
+            });
+        }
+
+        // Unlike batchApprove/batchReject, this doesn't change `status` — the row stays in
+        // whatever filter view is active, so update filteredEvents in place and re-render
+        // instead of removing the row.
+        function batchSetRecurring(value) {
+            const selectedRows = getSelectedRows();
+            if (selectedRows.length === 0) {
+                alert('No events selected');
+                return;
+            }
+
+            const events = selectedRows.map(row => getRowEventData(row));
+
+            fetch('/batch_set_recurring', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({events, value})
+            })
+            .then(response => response.json())
+            .then(data => {
+                events.forEach(ev => { ev.recurring = value; });
+                renderTable();
             });
         }
 
