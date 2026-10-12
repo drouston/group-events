@@ -172,7 +172,18 @@ def init_db():
                       total_scraped INTEGER,
                       total_approved INTEGER,
                       total_rejected INTEGER)''')
-    
+
+        # Same reasoning as the events.recurring migration above — universal_scraper.py adds
+        # these lazily on its own next run, but this web service queries them directly (see
+        # _venue_health_inner) and can't assume that run already happened. Bundling a column
+        # that doesn't exist yet into a SELECT with ones that do fails the whole query, not
+        # just that column, so this has to be proactive rather than left to a try/except.
+        for col in ('new_events', 'canceled_events', 'total_pending', 'scrape_mode',
+                    'updated_events', 'date_corrections', 'content_changes'):
+            default = "''" if col == 'scrape_mode' else '0'
+            coltype = 'TEXT' if col == 'scrape_mode' else 'INTEGER'
+            c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} {coltype} DEFAULT {default}''')
+
     else:
         c.execute('''CREATE TABLE IF NOT EXISTS events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,7 +264,20 @@ def init_db():
                       total_scraped INTEGER,
                       total_approved INTEGER,
                       total_rejected INTEGER)''')
-    
+
+        # SQLite's ADD COLUMN has no IF NOT EXISTS — same pattern as the events.recurring
+        # check above.
+        c.execute("PRAGMA table_info(scrape_stats)")
+        existing_cols = {row[1] for row in c.fetchall()}
+        for col, coltype, default in (
+            ('new_events', 'INTEGER', '0'), ('canceled_events', 'INTEGER', '0'),
+            ('total_pending', 'INTEGER', '0'), ('scrape_mode', 'TEXT', "''"),
+            ('updated_events', 'INTEGER', '0'), ('date_corrections', 'INTEGER', '0'),
+            ('content_changes', 'INTEGER', '0'),
+        ):
+            if col not in existing_cols:
+                c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
+
     conn.commit()
     conn.close()
 
@@ -878,6 +902,10 @@ def filter_events():
     if filters.get('venue') and filters['venue'] != 'all':
         query += f' AND venue = {ph}'
         params.append(filters['venue'])
+
+    if filters.get('city') and filters['city'] != 'all':
+        query += f' AND city = {ph}'
+        params.append(filters['city'])
     
     if filters.get('genre') and filters['genre'] != 'all':
         query += f' AND genre = {ph}'
@@ -1005,6 +1033,16 @@ def get_genres():
     conn.close()
     return jsonify({'genres': genres})
 
+@app.route('/api/cities')
+def get_cities():
+    """Get list of all unique cities"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT DISTINCT city FROM events WHERE city IS NOT NULL AND city != \'\' ORDER BY city')
+    cities = [row[0] for row in c.fetchall()]
+    conn.close()
+    return jsonify({'cities': cities})
+
 try:
     from universal_scraper import VENUES as _SCRAPER_VENUES
     VENUE_KEY_TO_NAME = {k: v['name'] for k, v in _SCRAPER_VENUES.items()}
@@ -1035,7 +1073,10 @@ def _venue_health_inner():
                 COUNT(*) FILTER (WHERE created_at IS NOT NULL AND created_at != ''
                     AND created_at::timestamp >= NOW() - INTERVAL '7 days'
                     AND status NOT IN ('rejected')) AS new_7d,
-                COUNT(*) FILTER (WHERE status = 'canceled') AS total_canceled
+                COUNT(*) FILTER (WHERE status = 'canceled') AS total_canceled,
+                COUNT(*) FILTER (WHERE status = 'approved') AS approved_total,
+                COUNT(*) FILTER (WHERE status = 'rejected') AS rejected_total,
+                COUNT(*) FILTER (WHERE status = 'possible_duplicate') AS possible_duplicate_total
             FROM events
             WHERE venue IS NOT NULL
             GROUP BY venue
@@ -1075,7 +1116,8 @@ def _venue_health_inner():
 
         try:
             c.execute('''
-                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0)
+                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0)
                 FROM scrape_stats
                 WHERE scrape_date >= (CURRENT_DATE - INTERVAL '30 days')::text
                 GROUP BY venue
@@ -1090,7 +1132,10 @@ def _venue_health_inner():
                 SUM(CASE WHEN status IN ('pending','possible_duplicate') THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN status='canceled' AND created_at >= date('now','-30 days') THEN 1 ELSE 0 END) AS canceled_30d,
                 SUM(CASE WHEN created_at >= date('now','-7 days') AND status != 'rejected' THEN 1 ELSE 0 END) AS new_7d,
-                SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS total_canceled
+                SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS total_canceled,
+                SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) AS approved_total,
+                SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected_total,
+                SUM(CASE WHEN status='possible_duplicate' THEN 1 ELSE 0 END) AS possible_duplicate_total
             FROM events WHERE venue IS NOT NULL
             GROUP BY venue ORDER BY upcoming DESC
         ''', (today,))
@@ -1125,7 +1170,8 @@ def _venue_health_inner():
 
         try:
             c.execute('''
-                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0)
+                SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0)
                 FROM scrape_stats
                 WHERE scrape_date >= date('now','-30 days')
                 GROUP BY venue
@@ -1137,19 +1183,33 @@ def _venue_health_inner():
     conn.close()
 
     key_to_scraped = {r[0]: r[1] for r in cache_rows}
-    venue_to_updates = {r[0]: (r[1], r[2]) for r in update_rows}
+    venue_to_updates = {r[0]: (r[1], r[2], r[3], r[4]) for r in update_rows}
     name_to_key = {v: k for k, v in VENUE_KEY_TO_NAME.items()}
     now_dt = datetime.now(CENTRAL)
 
+    # Auto-approve eligibility thresholds. Rates below are only trusted once the venue has
+    # enough reviewed/scraped volume for a percentage to mean anything — MIN_SAMPLE guards
+    # against e.g. 1 rejection out of 2 events reading as a disqualifying 50%.
+    MIN_SAMPLE = 10
+    REJECTION_RATE_MAX = 3
+    DUPLICATE_RATE_MAX = 3
+    DATE_CORRECTION_RATE_MAX = 10
+    CONTENT_CHANGE_RATE_MAX = 10
+    STALE_DAYS_MAX = 3
+
     venues = []
-    cols = ['venue','upcoming','pending','canceled_30d','new_7d','total_canceled']
+    cols = ['venue','upcoming','pending','canceled_30d','new_7d','total_canceled',
+            'approved_total','rejected_total','possible_duplicate_total']
     for row in venue_rows:
         d = dict(zip(cols, row))
         key = name_to_key.get(d['venue'])
         last_scraped_raw = key_to_scraped.get(key) if key else None
-        updated_30d, date_corrections_30d = venue_to_updates.get(d['venue'], (0, 0))
+        updated_30d, date_corrections_30d, total_scraped_30d, content_changes_30d = \
+            venue_to_updates.get(d['venue'], (0, 0, 0, 0))
         d['updated_30d'] = updated_30d
         d['date_corrections_30d'] = date_corrections_30d
+        d['total_scraped_30d'] = total_scraped_30d
+        d['content_changes_30d'] = content_changes_30d
 
         days_since = None
         last_scraped_label = 'Never'
@@ -1177,6 +1237,36 @@ def _venue_health_inner():
         d['health'] = health
         d['last_scraped_label'] = last_scraped_label
         d['days_since'] = days_since
+
+        # Auto-approve candidacy — see CLAUDE.md for the thresholds' rationale. Each rate is
+        # reviewed-outcome-based (rejection) or volume-based (duplicate/date/content), and
+        # None (not a numeric rate) means "not enough history to trust a percentage yet,"
+        # distinct from a rate that's measured and simply too high.
+        total_reviewed = d['approved_total'] + d['rejected_total']
+        total_volume = d['approved_total'] + d['rejected_total'] + d['pending']  # pending already includes possible_duplicate
+        rejection_rate = round(d['rejected_total'] / total_reviewed * 100, 1) if total_reviewed >= MIN_SAMPLE else None
+        dupe_rate = round(d['possible_duplicate_total'] / total_volume * 100, 1) if total_volume >= MIN_SAMPLE else None
+        date_correction_rate = round(date_corrections_30d / total_scraped_30d * 100, 1) if total_scraped_30d >= MIN_SAMPLE else None
+        content_change_rate = round(content_changes_30d / total_scraped_30d * 100, 1) if total_scraped_30d >= MIN_SAMPLE else None
+        is_stale = days_since is None or days_since > STALE_DAYS_MAX
+
+        d['rejection_rate'] = rejection_rate
+        d['dupe_rate'] = dupe_rate
+        d['date_correction_rate'] = date_correction_rate
+        d['content_change_rate'] = content_change_rate
+
+        rates = [rejection_rate, dupe_rate, date_correction_rate, content_change_rate]
+        if any(r is None for r in rates):
+            auto_approve_status = 'insufficient_data'
+        elif (rejection_rate < REJECTION_RATE_MAX and dupe_rate < DUPLICATE_RATE_MAX
+                and date_correction_rate < DATE_CORRECTION_RATE_MAX
+                and content_change_rate < CONTENT_CHANGE_RATE_MAX and not is_stale):
+            auto_approve_status = 'eligible'
+        else:
+            auto_approve_status = 'not_eligible'
+        d['auto_approve_status'] = auto_approve_status
+        d['currently_auto_approve'] = bool(_SCRAPER_VENUES.get(key, {}).get('auto_approve')) if key else False
+
         venues.append(d)
 
     totals = {
@@ -1184,6 +1274,7 @@ def _venue_health_inner():
         'pending': sum(v['pending'] for v in venues),
         'new_7d': sum(v['new_7d'] for v in venues),
         'canceled_30d': sum(v['canceled_30d'] for v in venues),
+        'auto_approve_eligible': sum(1 for v in venues if v['auto_approve_status'] == 'eligible'),
     }
 
     return render_template('venue_health.html',

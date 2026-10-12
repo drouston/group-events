@@ -39,7 +39,7 @@
         /* Summary cards */
         .summary-cards {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 16px;
             margin-bottom: 20px;
         }
@@ -169,6 +169,20 @@
         .health-badge.yellow { background: #ffc107; }
         .health-badge.red { background: #f44336; }
 
+        .approve-pill {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+        .approve-pill.eligible { background: #e8f5e9; color: #2e7d32; }
+        .approve-pill.not_eligible { background: #ffebee; color: #c62828; }
+        .approve-pill.insufficient_data { background: #f0f0f0; color: #777; }
+
+        .rate-na { color: #aaa; }
+
         .badge-cell {
             display: flex;
             align-items: center;
@@ -207,6 +221,10 @@
         <div class="card-label">Canceled (30d)</div>
         <div class="card-value">{{ totals.canceled_30d }}</div>
     </div>
+    <div class="card accent-green">
+        <div class="card-label">Auto-Approve Eligible</div>
+        <div class="card-value">{{ totals.auto_approve_eligible }}</div>
+    </div>
 </div>
 
 <!-- Charts -->
@@ -239,6 +257,11 @@
                 <th data-col="canceled_30d" class="num-col" data-dir="desc">Canceled (30d)</th>
                 <th data-col="date_corrections_30d" class="num-col" data-dir="desc" title="Times an already-saved event's date was corrected in place by a later scrape — a recurring count here signals unstable date extraction for that venue, not shows genuinely moving">Date Fixes (30d)</th>
                 <th data-col="days_since" data-dir="asc">Last Scraped</th>
+                <th data-col="rejection_rate" class="num-col" data-dir="desc" title="Rejected / (Approved + Rejected). Blank until at least 10 reviewed events exist — too few to trust a percentage.">Rejected %</th>
+                <th data-col="dupe_rate" class="num-col" data-dir="desc" title="Possible-duplicate / all non-canceled events ever produced. Blank until at least 10 events exist.">Dupe %</th>
+                <th data-col="date_correction_rate" class="num-col" data-dir="desc" title="Date corrections / total scraped, last 30 days. Blank until at least 10 scraped in that window.">Date Fix %</th>
+                <th data-col="content_change_rate" class="num-col" data-dir="desc" title="Title changes on an already-saved event / total scraped, last 30 days. Blank until at least 10 scraped in that window.">Content %</th>
+                <th data-col="auto_approve_status" data-dir="asc" title="Eligible: all four rates below threshold (3% / 3% / 10% / 10%) and not stale. Insufficient data: not enough reviewed/scraped volume yet to trust the rates.">Auto-Approve</th>
             </tr>
         </thead>
         <tbody id="healthBody">
@@ -250,7 +273,12 @@
                 data-new_7d="{{ v.new_7d }}"
                 data-canceled_30d="{{ v.canceled_30d }}"
                 data-date_corrections_30d="{{ v.date_corrections_30d }}"
-                data-days_since="{{ v.days_since if v.days_since is not none else 9999 }}">
+                data-days_since="{{ v.days_since if v.days_since is not none else 9999 }}"
+                data-rejection_rate="{{ v.rejection_rate if v.rejection_rate is not none else '' }}"
+                data-dupe_rate="{{ v.dupe_rate if v.dupe_rate is not none else '' }}"
+                data-date_correction_rate="{{ v.date_correction_rate if v.date_correction_rate is not none else '' }}"
+                data-content_change_rate="{{ v.content_change_rate if v.content_change_rate is not none else '' }}"
+                data-auto_approve_status="{{ v.auto_approve_status }}">
                 <td>
                     <div class="badge-cell">
                         <span class="health-badge {{ v.health }}"></span>
@@ -264,6 +292,18 @@
                 <td class="num-col">{{ v.canceled_30d }}</td>
                 <td class="num-col">{{ v.date_corrections_30d }}</td>
                 <td>{{ v.last_scraped_label }}</td>
+                <td class="num-col">{% if v.rejection_rate is not none %}{{ v.rejection_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
+                <td class="num-col">{% if v.dupe_rate is not none %}{{ v.dupe_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
+                <td class="num-col">{% if v.date_correction_rate is not none %}{{ v.date_correction_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
+                <td class="num-col">{% if v.content_change_rate is not none %}{{ v.content_change_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
+                <td>
+                    <span class="approve-pill {{ v.auto_approve_status }}">
+                        {% if v.auto_approve_status == 'eligible' %}Eligible
+                        {% elif v.auto_approve_status == 'not_eligible' %}Not eligible
+                        {% else %}Insufficient data{% endif %}
+                    </span>
+                    {% if v.currently_auto_approve %}<span title="Already set to auto_approve in VENUES config">&#9889;</span>{% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>

@@ -2165,6 +2165,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
     flagged = 0
     updated = 0
     date_corrections = 0
+    # Title drift on an already-saved event (same identity via URL match, different name) —
+    # the first of what's meant to be a family of content-change signals (description,
+    # openers, etc. later) for venue_health to flag unstable extraction the same way
+    # date_corrections already does for dates.
+    content_changes = 0
 
     for event in events:
         try:
@@ -2313,6 +2318,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
                               list(changes.values()) + [ex_id])
                     label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
+                    if 'name' in changes:
+                        content_changes += 1
                     if date_corrected:
                         date_corrections += 1
                         review_note = ' — sent back to pending for review' if changes.get('status') == 'pending' else ''
@@ -2411,11 +2418,12 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     conn.commit()
     conn.close()
-    print(f"  ✓ Inserted {inserted}, updated {updated} ({date_corrections} date corrections), skipped {skipped} duplicates, flagged {flagged} possible duplicates")
+    print(f"  ✓ Inserted {inserted}, updated {updated} ({date_corrections} date corrections, {content_changes} content changes), skipped {skipped} duplicates, flagged {flagged} possible duplicates")
     return {
         'inserted': inserted,
         'updated': updated,
         'date_corrections': date_corrections,
+        'content_changes': content_changes,
         'skipped': skipped,
         'flagged': flagged
     }
@@ -2434,6 +2442,7 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
     # rows piled up undetected.
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS updated_events INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS date_corrections INTEGER DEFAULT 0''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS content_changes INTEGER DEFAULT 0''')
 
     # Get current totals
     c.execute(f'''SELECT
@@ -2445,8 +2454,9 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
 
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
-         new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections,
+         content_changes)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
@@ -2455,7 +2465,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
          row[1],
          mode,
          stats.get('updated', 0),
-         stats.get('date_corrections', 0)))
+         stats.get('date_corrections', 0),
+         stats.get('content_changes', 0)))
     conn.commit()
     conn.close()
 

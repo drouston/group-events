@@ -675,6 +675,13 @@
             </div>
 
             <div class="filter-group">
+                <label>City</label>
+                <select id="filter-city">
+                    <option value="all">All Cities</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
                 <label>Event Type</label>
                 <select id="filter-event-type">
                     <option value="all">All Types</option>
@@ -886,11 +893,11 @@
 
         // Load initial data
         async function init() {
-            await loadVenuesAndGenres();
+            await loadFilterOptions();
             await applyFilters();
         }
 
-        async function loadVenuesAndGenres() {
+        async function loadFilterOptions() {
             const venuesResp = await fetch('/api/venues');
             const venuesData = await venuesResp.json();
             const venueSelect = document.getElementById('filter-venue');
@@ -910,6 +917,16 @@
                 option.textContent = genre;
                 genreSelect.appendChild(option);
             });
+
+            const citiesResp = await fetch('/api/cities');
+            const citiesData = await citiesResp.json();
+            const citySelect = document.getElementById('filter-city');
+            citiesData.cities.forEach(city => {
+                const option = document.createElement('option');
+                option.value = city;
+                option.textContent = city;
+                citySelect.appendChild(option);
+            });
         }
 
         async function applyFilters() {
@@ -918,6 +935,7 @@
                 status: document.getElementById('filter-status').value,
                 venue: document.getElementById('filter-venue').value,
                 genre: document.getElementById('filter-genre').value,
+                city: document.getElementById('filter-city').value,
                 event_type: document.getElementById('filter-event-type').value,
                 confidence_level: document.getElementById('filter-confidence').value === 'all' ? null : document.getElementById('filter-confidence').value,
                 date_from: document.getElementById('filter-date-from').value,
@@ -1510,6 +1528,7 @@
             document.getElementById('filter-status').value = 'pending';
             document.getElementById('filter-venue').value = 'all';
             document.getElementById('filter-genre').value = 'all';
+            document.getElementById('filter-city').value = 'all';
             document.getElementById('filter-event-type').value = 'all';
             document.getElementById('filter-confidence').value = 'all';
             document.getElementById('filter-date-from').value = '';
@@ -1545,6 +1564,15 @@
             const detail = getDetailRow(row);
             if (detail && detail.classList.contains('detail-row')) detail.remove();
             row.remove();
+            // Every approve/reject path (single-row and batch) funnels through here — the
+            // checkbox and its row leave the DOM together, so the stale "Selected" count and
+            // a still-checked Select All (now not actually reflecting every visible row)
+            // need to be recomputed here rather than in each individual caller.
+            updateSelectedCount();
+            const selectAll = document.getElementById('select-all');
+            if (selectAll && document.querySelectorAll('.event-checkbox:checked').length === 0) {
+                selectAll.checked = false;
+            }
         }
 
         // Event delegation for row buttons
