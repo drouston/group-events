@@ -2251,17 +2251,26 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 add_url_check(event['event_url'], dupe_use_start_date)
 
             if url_paths:
+                # No LIMIT 1 here — once two+ rows already share a matching URL (the exact
+                # scenario this block exists to prevent happening again), an arbitrary single
+                # candidate can easily be the wrong one (e.g. an earlier, truncated extraction
+                # of the same show) and fail the name-similarity floor below, discarding a
+                # perfectly good match and inserting yet another duplicate. Confirmed causing
+                # compounding growth at Toyota Center: once 2-3 rows existed for one event,
+                # each new scrape became more likely to draw the wrong one and add a 4th, 5th...
+                # Fetching all candidates and picking the best-matching name fixes that without
+                # weakening the floor itself.
                 c.execute(f'''SELECT id, name, start_date, start_time, doors_time, end_time, sold_out, date_changed, openers, price, ticket_url, event_url, status
                                 FROM events
                                 WHERE venue = {ph}
                                 AND status NOT IN ('rejected', 'canceled')
-                                AND ({' OR '.join(url_paths)})
-                                LIMIT 1''',
+                                AND ({' OR '.join(url_paths)})''',
                             [event['venue']] + url_params)
-                url_match = c.fetchone()
+                url_candidates = c.fetchall()
             else:
-                url_match = None
-            if url_match:
+                url_candidates = []
+            url_match = None
+            if url_candidates:
                 # A URL match alone isn't sufficient proof of identity when a venue reuses one
                 # link across genuinely different shows (a generic storefront link, a comedian's
                 # profile page reused across their own multiple nights, etc.) — require the names
@@ -2269,9 +2278,10 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 # that happen to share a link don't get silently merged. Legitimate title drift
                 # (an opener added, punctuation changes) stays well above this floor.
                 NAME_SIMILARITY_FLOOR = 0.4
-                url_match_name_similarity = SequenceMatcher(None, event['name'].lower(), url_match[1].lower()).ratio()
-                if url_match_name_similarity < NAME_SIMILARITY_FLOOR:
-                    url_match = None
+                best = max(url_candidates,
+                           key=lambda cand: SequenceMatcher(None, event['name'].lower(), cand[1].lower()).ratio())
+                if SequenceMatcher(None, event['name'].lower(), best[1].lower()).ratio() >= NAME_SIMILARITY_FLOOR:
+                    url_match = best
             if url_match:
                 (ex_id, ex_name, ex_start_date, ex_start, ex_doors, ex_end, ex_sold_out,
                  ex_date_changed, ex_openers, ex_price, ex_ticket_url, ex_event_url, ex_status) = url_match
