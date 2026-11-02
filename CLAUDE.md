@@ -214,6 +214,7 @@ GET  /debug               # Debug info
 - [ ] Status migration contract step: after go-live, move reads to `review_status`/`event_status` and drop the legacy `status` column and its sync trigger.
 - [ ] Remaining `possible_duplicate` backlog (~150 rows after the 2026-11-02 Doc's/Arena cleanup) — triage with the scorer once it's live rather than by hand.
 - [ ] Doc's Jazz Club runs 7:00 and 9:30 shows on many nights; extraction only captures one per night.
+- [ ] **Review scraping for optimization** (added 2026-11-02). A Houston onboard dry run took ~40 min for the first 18 venues, about twice the estimate. Slowest: Riot Comedy 645s (page is 114k chars, over the 100k input cap, so later events are cut off before extraction; split twice), House of Blues 367s and Toyota Center 352s (one LLM split each), Smart Financial 169s (multiple category pages). Candidates: HTML trimming before the LLM for heavy pages, dropping low-value output fields (description, per-field confidence) to stay under the output cap, and per-venue run timing in `scrape_stats`. Full per-venue timings: rerun the dry run, or see the 2026-11-02 run summary.
 - [ ] Weekly leak monitor: write per-venue `--leak-report` counts to `scrape_stats` and show them on venue health.
 
 ### Architecture / Scale
