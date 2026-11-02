@@ -181,9 +181,9 @@ def init_db():
         # that doesn't exist yet into a SELECT with ones that do fails the whole query, not
         # just that column, so this has to be proactive rather than left to a try/except.
         for col in ('new_events', 'canceled_events', 'total_pending', 'scrape_mode',
-                    'updated_events', 'date_corrections', 'content_changes'):
-            default = "''" if col == 'scrape_mode' else '0'
-            coltype = 'TEXT' if col == 'scrape_mode' else 'INTEGER'
+                    'updated_events', 'date_corrections', 'content_changes', 'splits', 'error'):
+            default = "''" if col == 'scrape_mode' else ('NULL' if col == 'error' else '0')
+            coltype = 'TEXT' if col in ('scrape_mode', 'error') else 'INTEGER'
             c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} {coltype} DEFAULT {default}''')
 
     else:
@@ -278,7 +278,7 @@ def init_db():
             ('new_events', 'INTEGER', '0'), ('canceled_events', 'INTEGER', '0'),
             ('total_pending', 'INTEGER', '0'), ('scrape_mode', 'TEXT', "''"),
             ('updated_events', 'INTEGER', '0'), ('date_corrections', 'INTEGER', '0'),
-            ('content_changes', 'INTEGER', '0'),
+            ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'),
         ):
             if col not in existing_cols:
                 c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
@@ -1197,6 +1197,22 @@ def _venue_health_inner():
         except Exception:
             update_rows = []
 
+    # Failed runs and LLM content splits from the last 7 days.
+    venue_to_errors = {}
+    try:
+        week_ago = (datetime.now(CENTRAL).date() - timedelta(days=7)).isoformat()
+        c.execute(f"SELECT venue, error, COALESCE(splits, 0) FROM scrape_stats WHERE scrape_date >= {'%s' if DATABASE_URL else '?'} ORDER BY id",
+                  (week_ago,))
+        for venue, err, splits in c.fetchall():
+            e = venue_to_errors.setdefault(venue, {'errors_7d': 0, 'last_error': None, 'splits_7d': 0})
+            e['splits_7d'] += splits
+            if err:
+                e['errors_7d'] += 1
+                e['last_error'] = err
+    except Exception:
+        if DATABASE_URL:
+            conn.rollback()
+
     conn.close()
 
     key_to_scraped = {r[0]: r[1] for r in cache_rows}
@@ -1227,6 +1243,7 @@ def _venue_health_inner():
         d['date_corrections_30d'] = date_corrections_30d
         d['total_scraped_30d'] = total_scraped_30d
         d['content_changes_30d'] = content_changes_30d
+        d.update(venue_to_errors.get(d['venue'], {'errors_7d': 0, 'last_error': None, 'splits_7d': 0}))
 
         days_since = None
         last_scraped_label = 'Never'
@@ -1244,9 +1261,9 @@ def _venue_health_inner():
         # Theater date-drift bug early (51 duplicate rows accumulated over ~6 weeks before
         # anyone noticed) — a venue whose already-saved events keep needing their date
         # fixed is a sign its extraction is unstable, not that shows keep genuinely moving.
-        if d['canceled_30d'] >= 5 or date_corrections_30d >= 10 or (d['upcoming'] == 0 and (days_since is None or days_since > 3)):
+        if d['canceled_30d'] >= 5 or date_corrections_30d >= 10 or d['errors_7d'] >= 2 or (d['upcoming'] == 0 and (days_since is None or days_since > 3)):
             health = 'red'
-        elif d['canceled_30d'] >= 2 or d['pending'] >= 10 or date_corrections_30d >= 3 or (days_since is not None and days_since > 2):
+        elif d['canceled_30d'] >= 2 or d['pending'] >= 10 or date_corrections_30d >= 3 or d['errors_7d'] >= 1 or (days_since is not None and days_since > 2):
             health = 'yellow'
         else:
             health = 'green'

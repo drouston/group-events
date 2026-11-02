@@ -7,6 +7,7 @@ from collections import defaultdict
 from dateutil.utils import today
 from difflib import SequenceMatcher
 from status_model import migrate_status_columns
+import event_matching as em
 from urllib.parse import urljoin, urlparse
 import requests
 from datetime import datetime, timedelta
@@ -84,6 +85,8 @@ VENUES = {
         # CLAUDE.md): Prekindle ticket_url is unique per occurrence here too (same signature
         # as Heights Theater) — the one shared-URL case found was a date-drift pair with the
         # same event name on both dates, not a reused generic link.
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"ticket_url": "key"},
         "dupe_use_start_date": False
     },
     "white_oak": {
@@ -106,6 +109,8 @@ VENUES = {
         # occurrence (not a reused profile/template link) — safe to match on ticket_url alone
         # and treat a date difference as a correction rather than a new event. This is what
         # let 51 duplicate rows accumulate here undetected before the cleanup that day.
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"ticket_url": "key", "event_url": "ignore"},
         "dupe_use_start_date": False,
         # Added 2026-10-22: event_url is always just venue_url verbatim — Heights Theater has
         # no real per-event pages of its own, everything routes through Prekindle. Left
@@ -338,6 +343,8 @@ VENUES = {
         "unreliable_urls": "event_url",
         # Confirmed 2026-08-19 via the dupe_use_start_date verification procedure (CLAUDE.md):
         # ticket_url is unique per occurrence, no case of a reused link across different shows.
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"ticket_url": "key", "event_url": "ignore"},
         "dupe_use_start_date": False,
         # Confirmed 2026-09-23: same headliner often runs an early + late set (or two different
         # headliners) on one night — same false-positive class as Secret Group (ce1dcdf).
@@ -376,6 +383,8 @@ VENUES = {
         # Confirmed 2026-08-17 via the dupe_use_start_date verification procedure (CLAUDE.md):
         # ticket_url is unique per occurrence, every shared-URL case found was the date-drift
         # signature (same name, wrong date), never a reused link across different shows.
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"ticket_url": "key"},
         "dupe_use_start_date": False,
         # This venue runs multiple distinct showtimes nightly (Comedy Showcase 7/9/11pm, Joe
         # List 7PM/9PM) with near-identical titles — safe to treat a differing start_time as
@@ -464,6 +473,10 @@ VENUES = {
         # tickets.docshouston.com, same domain as this venue's own url) now reliably puts the
         # good numeric /shows/<id>/<date> link in event_url and leaves ticket_url null, so no
         # longer nulling event_url here.
+        # /r/<slug> links are series pages shared across dates (the site's own JSON-LD uses them).
+        "link_ignore_patterns": [r"/r/"],
+        # Many nights run a 7:00 and a 9:30 show (confirmed 2026-11-02 via JSON-LD).
+        "dupe_check_start_time": True,
     },
     "arena_theatre": {
         "name": "Arena Theatre",
@@ -788,6 +801,7 @@ def check_canceled_events(venue_key, scraped_events):
         # Almost always a fetch failure (network hiccup, API error, empty page
         # load) rather than a venue genuinely having zero upcoming shows.
         print(f"  ↷ Skipping cancellation check for {venue_name} — scrape returned 0 events")
+        LAST_CANCEL_CHECK[venue_key] = {'skipped': 'empty'}
         return 0
 
     conn = get_db_connection()
@@ -874,6 +888,7 @@ def check_canceled_events(venue_key, scraped_events):
             reactivated_count += 1
             print(f"  ↺ Reappeared, reactivated as pending: {db_name} on {db_date}")
 
+    LAST_CANCEL_CHECK[venue_key] = {'missing': [m[0] for m in missing], 'over_cap': over_cap}
     canceled_count = 0
     if over_cap:
         print(f"  ⚠ {len(missing)} events missing at once for {venue_name} "
@@ -1498,6 +1513,11 @@ Return ONLY valid JSON with an "events" array."""
     user_prompt = f"Extract events from this page:\n\n{page_text[:char_limit]}"
     return get_llm_response(system_prompt, user_prompt, llm=llm)
 
+# Characters to shift the LLM content split by, cycling back/none/forward by day of year.
+SPLIT_SHIFT_CHARS = 1500
+# Splits per venue name in this run, recorded in scrape_stats.
+SPLIT_COUNTS = {}
+
 def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
     """Extract events using LLM from text or HTML.
 
@@ -1556,35 +1576,19 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
         if _depth >= 3 or len(content) < 4000:
             raise
         print(f"  ⚠ LLM response truncated ({len(content)} chars sent) — splitting content and retrying")
-        body, marker, links_block = content.partition('\n\nLINKS:\n')
-        links_suffix = f'{marker}{links_block}' if marker else ''
-        mid = len(body) // 2
-        split_at = body.rfind('\n', 0, mid)
-        if split_at == -1:
-            split_at = mid
-        first_half = body[:split_at] + links_suffix
-        second_half = body[split_at:] + links_suffix
-        result_a = extract_events_with_llm_raw(first_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
-        result_b = extract_events_with_llm_raw(second_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
-        # The split is a blind character-count cut, not event-aware — an event block
-        # straddling the boundary can get a partial, independent (mis)read from either half.
-        # Confirmed on Heights Theater: one real event ("The Moth Houston GrandSLAM") came
-        # back twice, same ticket_url, with two different dates (one matching the page, one
-        # hallucinated). An earlier version of this code tried to dedupe the merge by URL —
-        # removed 2026-10-19: that only works when both halves happen to agree, and has no
-        # way to tell which copy is correct when they don't (and silently can't dedupe at all
-        # for events with no ticket_url/event_url to key on, which overlap would only make
-        # worse). Flagging for human review, not silently resolving, is the honest approach —
-        # see the `flags` column and the dupe-detection-hierarchy to-do in CLAUDE.md, which
-        # needs to treat this as a known-uncertain input rather than an ordinary extraction.
-        # Only the two events actually adjacent to the cut are marked, not the whole batch —
-        # everything else in either half was read with full context and isn't suspect.
-        events_a = result_a.get('events', [])
-        events_b = result_b.get('events', [])
-        if events_a:
-            events_a[-1].setdefault('flags', []).append('split_boundary')
-        if events_b:
-            events_b[0].setdefault('flags', []).append('split_boundary')
+        SPLIT_COUNTS[venue_name] = SPLIT_COUNTS.get(venue_name, 0) + 1
+        # Shift the cut by day of year so an event straddling it is read whole on another run.
+        offset = (datetime.now().timetuple().tm_yday % 3 - 1) * SPLIT_SHIFT_CHARS
+        target = min(max(len(content) // 2 + offset, 1), len(content) - 1)
+        split_at = content.rfind('\n', 0, target)
+        if split_at <= 0:
+            split_at = target
+        result_a = extract_events_with_llm_raw(content[:split_at], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
+        result_b = extract_events_with_llm_raw(content[split_at:], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
+        # The event on each side of the cut may be a partial read, so drop both; the shifted
+        # cut on a later run captures them whole.
+        events_a = result_a.get('events', [])[:-1]
+        events_b = result_b.get('events', [])[1:]
         return {'events': events_a + events_b}
 
 def parse_white_oak_html(html):
@@ -2006,6 +2010,9 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # per scrape rather than once per event.
     toyota_tickets = get_toyota_carousel_tickets(html) if venue_key == 'toyota_center' else None
 
+    _site = urlparse(venue.get('url', ''))
+    generic_links = {u.rstrip('/') for u in (venue.get('url'), venue.get('venue_url'),
+                                             f"{_site.scheme}://{_site.netloc}" if _site.netloc else None) if u}
     for event in events:
         event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
         event['venue'] = venue['name']
@@ -2097,6 +2104,11 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
                 event['ticket_url'] = re.sub(event['strip_end_url'], '', event['ticket_url'])
             if event.get('event_url'):
                 event['event_url'] = re.sub(event['strip_end_url'], '', event['event_url'])
+        # A link to the scraped page or the venue's own site carries nothing about this event;
+        # the calendar falls back to venue_url anyway.
+        for field in ('ticket_url', 'event_url'):
+            if event.get(field) and event[field].rstrip('/') in generic_links:
+                event[field] = None
 
     # A ticket_url/event_url shared by 2+ differently-named events in this same scrape is a
     # strong signal of a generic/shared page (a seasonal campaign link, a venue-wide landing
@@ -2129,7 +2141,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     return events, canceled_count
 
-def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=None):
+def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=None, dry_run=False):
     """Scrape all venues, save, and log stats per venue.
 
     group filters down to venues tagged with a matching schedule_group (e.g.
@@ -2149,13 +2161,20 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=
     all_events = []
     for venue_key in venue_keys:
         try:
-            events, canceled_count = scrape_venue(venue_key, mode=mode, llm=llm)
+            events, canceled_count = scrape_venue(venue_key, mode=mode, llm=llm, dry_run=dry_run)
+            for e in events or []:
+                e.setdefault('venue_key', venue_key)
             all_events.extend(events)
-            if events is not None:
+            if events is not None and not dry_run:
                 stats = save_to_database(events, mode=mode, auto_approve=auto_approve)
                 log_scrape_stats(VENUES[venue_key]['name'], mode, stats, canceled_count)
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
+            if not dry_run:
+                try:
+                    log_scrape_stats(VENUES[venue_key]['name'], mode, {}, 0, error=f"{type(e).__name__}: {e}")
+                except Exception as log_err:
+                    print(f"  ⚠ Could not record the failure: {log_err}")
     return all_events
 
 def expand_multi_night_events(events):
@@ -2191,6 +2210,172 @@ def expand_multi_night_events(events):
             expanded.append(event)
     return expanded
 
+# ---------- unified matching, shadow mode (see event_matching.py) ----------
+
+# Legacy cancellation result per venue_key, captured so shadow mode can compare against it.
+LAST_CANCEL_CHECK = {}
+
+MATCH_ROW_COLS = ('id', 'name', 'start_date', 'start_time', 'doors_time', 'location', 'ticket_url',
+                  'event_url', 'review_status', 'event_status', 'recurring', 'duplicate_of_id', 'venue')
+
+
+def _load_match_rows(c, venues, since):
+    if not venues:
+        return {}
+    ph = '%s'
+    c.execute(f'''SELECT {', '.join(MATCH_ROW_COLS)} FROM events
+                  WHERE venue IN ({', '.join([ph] * len(venues))}) AND start_date >= {ph}''',
+              list(venues) + [since])
+    rows_by_venue = {}
+    for r in c.fetchall():
+        row = dict(zip(MATCH_ROW_COLS, r))
+        rows_by_venue.setdefault(row['venue'], []).append(row)
+    return rows_by_venue
+
+
+def shadow_decide(c, events):
+    """Run the unified scorer over a save batch against the pre-batch DB state. Never raises."""
+    try:
+        since = (datetime.now().date() - timedelta(days=em.POSTPONE_LOOKBACK_DAYS + 1)).isoformat()
+        rows_by_venue = _load_match_rows(c, {e.get('venue') for e in events if e.get('venue')}, since)
+        decisions, claimed, best_against = em.decide_batch(events, rows_by_venue, VENUES)
+        return {'decisions': decisions, 'claimed': claimed, 'best_against': best_against,
+                'rows_by_venue': rows_by_venue}
+    except Exception as e:
+        print(f"  ⚠ Shadow matching failed (legacy path unaffected): {e}")
+        return None
+
+
+def _ensure_match_log(c):
+    c.execute('''CREATE TABLE IF NOT EXISTS match_log
+                 (id SERIAL PRIMARY KEY, logged_at TEXT, mode TEXT, kind TEXT, venue TEXT, venue_key TEXT,
+                  event_name TEXT, start_date TEXT, start_time TEXT,
+                  shadow_decision TEXT, shadow_target TEXT, shadow_score INTEGER, parts TEXT,
+                  runner_up_id TEXT, runner_up_score INTEGER, reason TEXT,
+                  legacy_outcome TEXT, legacy_target INTEGER, legacy_new_id INTEGER,
+                  agree BOOLEAN, detail TEXT)''')
+
+
+def shadow_log(c, events, shadow, legacy_outcomes, mode):
+    """Log shadow vs legacy decisions for one batch, plus a cancellation comparison per
+    directly scraped venue. Never raises."""
+    if not shadow or not events:
+        return
+    try:
+        _ensure_match_log(c)
+        now = datetime.now().isoformat()
+        postponement_targets = set()
+        for d, ev, lo in zip(shadow['decisions'], events, legacy_outcomes):
+            lo = lo or {'outcome': 'unknown'}
+            if d['decision'] == 'review' and d.get('reason') == 'possible_postponement':
+                postponement_targets.add(d['target_id'])
+            c.execute('''INSERT INTO match_log (logged_at, mode, kind, venue, venue_key, event_name, start_date,
+                         start_time, shadow_decision, shadow_target, shadow_score, parts, runner_up_id,
+                         runner_up_score, reason, legacy_outcome, legacy_target, legacy_new_id, agree)
+                         VALUES (%s,%s,'save',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                      (now, mode, ev.get('venue'), ev.get('venue_key'), ev.get('name'), ev.get('start_date'),
+                       ev.get('start_time'), d['decision'],
+                       None if d['target_id'] is None else str(d['target_id']), d['score'],
+                       json.dumps(d['parts']) if d['parts'] else None,
+                       None if d['runner_up_id'] is None else str(d['runner_up_id']), d['runner_up_score'],
+                       d.get('reason'), lo.get('outcome'), lo.get('target_id'), lo.get('new_id'),
+                       em.agrees(d, lo)))
+
+        today = datetime.now().date().isoformat()
+        for venue_key in {e.get('venue_key') for e in events if e.get('venue_key')}:
+            legacy = LAST_CANCEL_CHECK.get(venue_key)
+            if legacy is None or legacy.get('skipped'):
+                continue
+            venue = VENUES.get(venue_key, {}).get('name')
+            legacy_missing = set(legacy.get('missing', []))
+            active = [r for r in shadow['rows_by_venue'].get(venue, [])
+                      if r['start_date'] >= today and r['review_status'] in ('pending', 'approved')
+                      and (r['event_status'] != 'canceled' or r['id'] in legacy_missing)]
+            shadow_missing = set(em.missing_rows(active, shadow['claimed'], shadow['best_against'],
+                                                 postponement_targets))
+            c.execute('''INSERT INTO match_log (logged_at, mode, kind, venue, venue_key, agree, detail)
+                         VALUES (%s,%s,'cancel',%s,%s,%s,%s)''',
+                      (now, mode, venue, venue_key, shadow_missing == legacy_missing,
+                       json.dumps({'shadow_missing': sorted(shadow_missing),
+                                   'legacy_missing': sorted(legacy_missing),
+                                   'legacy_over_cap': legacy.get('over_cap', False)})))
+    except Exception as e:
+        print(f"  ⚠ Shadow logging failed (legacy path unaffected): {e}")
+        c.connection.rollback()
+
+
+def match_report(days=7):
+    """Agreement between the unified scorer (shadow) and the legacy path. Read-only."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    c.execute('''SELECT shadow_decision, legacy_outcome, agree, COUNT(*) FROM match_log
+                 WHERE kind = 'save' AND logged_at >= %s GROUP BY 1,2,3 ORDER BY 4 DESC''', (since,))
+    rows = c.fetchall()
+    total = sum(r[3] for r in rows)
+    agreed = sum(r[3] for r in rows if r[2])
+    print(f"\n=== Match report, last {days} days: {agreed}/{total} decisions agree ===")
+    for sd, lo, ag, n in rows:
+        print(f"  {'✓' if ag else '✗'} shadow={sd:16} legacy={lo:18} {n}")
+    c.execute('''SELECT venue, event_name, start_date, start_time, shadow_decision, shadow_target, shadow_score,
+                        parts, reason, legacy_outcome, legacy_target
+                 FROM match_log WHERE kind = 'save' AND logged_at >= %s AND NOT agree
+                 ORDER BY venue, start_date''', (since,))
+    print("\n--- Disagreements ---")
+    for r in c.fetchall():
+        print(f"  [{r[0]}] {r[2]} {r[3] or ''} {r[1]}")
+        print(f"      shadow {r[4]} → {r[5]} score={r[6]} {r[8] or ''} {r[7] or ''}")
+        print(f"      legacy {r[9]} → {r[10]}")
+    c.execute('''SELECT venue, agree, detail FROM match_log
+                 WHERE kind = 'cancel' AND logged_at >= %s ORDER BY logged_at''', (since,))
+    cancel_rows = c.fetchall()
+    print(f"\n--- Cancellation: {sum(1 for r in cancel_rows if r[1])}/{len(cancel_rows)} venue runs agree ---")
+    for venue, ag, detail in cancel_rows:
+        if not ag:
+            d = json.loads(detail)
+            print(f"  [{venue}] shadow missing {d['shadow_missing']} vs legacy missing {d['legacy_missing']}")
+    conn.close()
+
+
+def leak_report():
+    """Read-only: same-venue, same-date active pairs scoring 55+ with no duplicate link
+    between them. Each one is a duplicate the save path let through."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    today = datetime.now().date().isoformat()
+    c.execute(f'''SELECT {', '.join(MATCH_ROW_COLS)} FROM events
+                  WHERE start_date >= %s AND review_status IN ('pending', 'approved')
+                  AND event_status != 'canceled' ''', (today,))
+    rows = [dict(zip(MATCH_ROW_COLS, r)) for r in c.fetchall()]
+    conn.close()
+    key_by_name = {v['name']: k for k, v in VENUES.items()}
+    groups = {}
+    for r in rows:
+        groups.setdefault((r['venue'], r['start_date']), []).append(r)
+    per_venue = {}
+    leaks = []
+    for (venue, _), group in groups.items():
+        if len(group) < 2:
+            continue
+        profile = em.venue_profile(VENUES.get(key_by_name.get(venue)))
+        ctx = {'profile': profile, 'batch_ignored': set(), 'pool': group}
+        for i in range(len(group)):
+            for j in range(i + 1, len(group)):
+                a, b = group[i], group[j]
+                if a['duplicate_of_id'] == b['id'] or b['duplicate_of_id'] == a['id']:
+                    continue
+                total, parts = em.score(a, b, ctx)
+                if total >= em.REVIEW_AT:
+                    per_venue[venue] = per_venue.get(venue, 0) + 1
+                    leaks.append((total, venue, a, b, parts))
+    print(f"\n=== Leak report: {len(leaks)} unlinked active pairs scoring {em.REVIEW_AT}+ ===")
+    for venue, n in sorted(per_venue.items(), key=lambda x: -x[1]):
+        print(f"  {n:4}  {venue}")
+    for total, venue, a, b, parts in sorted(leaks, key=lambda x: -x[0])[:40]:
+        print(f"  {total:4} [{venue}] {a['start_date']} #{a['id']} '{a['name']}' ~ #{b['id']} '{b['name']}' {parts}")
+    return per_venue
+
+
 def save_to_database(events, mode='daily', auto_approve=False):
     """Save events to database with exact and partial duplicate detection"""
     from difflib import SequenceMatcher
@@ -2221,6 +2406,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
     # review_dashboard.py's init_db) since this INSERT runs every daily scrape, not just
     # when the web service happens to restart.
     c.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS flags TEXT")
+    # Which scraper produced the row; for tracking aggregator-sourced venues, never read by matching.
+    c.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS source TEXT")
+
+    legacy_outcomes = [None] * len(events)
+    shadow = shadow_decide(c, events)
 
     inserted = 0
     skipped = 0
@@ -2233,7 +2423,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
     # date_corrections already does for dates.
     content_changes = 0
 
-    for event in events:
+    for i, event in enumerate(events):
         try:
             # Computed early — needed both for the URL-match date-correction gate below and
             # the new-insert status decision further down.
@@ -2268,6 +2458,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
                               list(backfill.values()) + [ex_id])
                     print(f"  ↻ Backfilled ({', '.join(backfill)}): {event['name']}")
+                legacy_outcomes[i] = {'outcome': 'exact_skip', 'target_id': ex_id}
                 skipped += 1
                 continue
 
@@ -2399,6 +2590,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     else:
                         print(f"  ↻ Updated ({', '.join(changes)}): {label}")
                     updated += 1
+                legacy_outcomes[i] = {'outcome': 'url_update', 'target_id': ex_id, 'date_corrected': date_corrected}
                 skipped += 1
                 continue
 
@@ -2417,6 +2609,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                                   WHERE id = {ph}''',
                               (new_time, event.get('end_time'), existing_id))
                     print(f"  ↻ Time updated: {event['name']} ({existing_time} → {new_time})")
+                legacy_outcomes[i] = {'outcome': 'near_update', 'target_id': existing_id}
                 skipped += 1
                 continue
 
@@ -2463,8 +2656,9 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             (name, start_date, end_date, doors_time, start_time, end_time,
                             multi_day, venue, location, city, state,
                             price, ticket_url, event_url, venue_url, description, genre, confidence, status, created_at,
-                            event_type, visible, sold_out, date_changed, openers, duplicate_of_id, flags)
-                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                            event_type, visible, sold_out, date_changed, openers, duplicate_of_id, flags, source)
+                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                            RETURNING id''',
                         (event['name'],
                         event.get('start_date'),
                         event.get('end_date'),
@@ -2488,11 +2682,17 @@ def save_to_database(events, mode='daily', auto_approve=False):
                         # extensible list rather than a one-off boolean column per signal, so
                         # a future flag (see CLAUDE.md's dupe-hierarchy to-do) is just a new
                         # code, not a new migration.
-                        json.dumps(event.get('flags', []))))
+                        json.dumps(event.get('flags', [])), event.get('venue_key')))
             inserted += 1
+            new_id = c.fetchone()[0]
+            legacy_outcomes[i] = ({'outcome': 'possible_duplicate', 'target_id': duplicate_of_id, 'new_id': new_id}
+                                  if status == 'possible_duplicate' else {'outcome': 'insert', 'new_id': new_id})
         except Exception as e:
             print(f"Error inserting {event['name']}: {e}")
+            legacy_outcomes[i] = {'outcome': 'error'}
 
+    conn.commit()
+    shadow_log(c, events, shadow, legacy_outcomes, mode)
     conn.commit()
     conn.close()
     print(f"  ✓ Inserted {inserted}, updated {updated} ({date_corrections} date corrections, {content_changes} content changes), skipped {skipped} duplicates, flagged {flagged} possible duplicates")
@@ -2505,7 +2705,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
         'flagged': flagged
     }
 
-def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
+def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     if not DATABASE_URL:
         return
     conn = get_db_connection()
@@ -2520,6 +2720,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS updated_events INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS date_corrections INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS content_changes INTEGER DEFAULT 0''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS splits INTEGER DEFAULT 0''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS error TEXT''')
 
     # Get current totals
     c.execute(f'''SELECT
@@ -2532,8 +2734,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
          new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections,
-         content_changes)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         content_changes, splits, error)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
@@ -2543,7 +2745,9 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0):
          mode,
          stats.get('updated', 0),
          stats.get('date_corrections', 0),
-         stats.get('content_changes', 0)))
+         stats.get('content_changes', 0),
+         SPLIT_COUNTS.pop(venue_name, 0),
+         error[:1000] if error else None))
     conn.commit()
     conn.close()
 
@@ -2797,7 +3001,18 @@ if __name__ == "__main__":
                         help='Extract and print events without writing to DB')
     parser.add_argument('--detect-duplicates', action='store_true',
                         help='Scan existing events table for duplicates and flag them')
+    parser.add_argument('--match-report', type=int, nargs='?', const=7, default=None, metavar='DAYS',
+                        help='Compare unified-matching shadow decisions with the legacy path (read-only)')
+    parser.add_argument('--leak-report', action='store_true',
+                        help='List active same-day pairs the scorer says are unlinked duplicates (read-only)')
     args = parser.parse_args()
+
+    if args.match_report is not None:
+        match_report(args.match_report)
+        exit(0)
+    if args.leak_report:
+        leak_report()
+        exit(0)
 
     if DATABASE_URL:
         _conn = get_db_connection()
@@ -2852,10 +3067,13 @@ if __name__ == "__main__":
                     print(f"  {e.get('start_date')} | {e.get('end_date')} |{e.get('start_time')} | {e.get('venue')} | {e.get('name')} | {ticket}")
                 print(f"{'='*60}")
             else:
+                for e in events:
+                    e.setdefault('venue_key', args.venue)
                 stats = save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
                 log_scrape_stats(VENUES[args.venue]['name'], args.mode, stats, canceled_count)
     else:
-        all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve, group=args.group)
+        all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve, group=args.group,
+                                       dry_run=args.dry_run)
         if args.dry_run:
             print(f"\n{'='*60}")
             print(f"DRY RUN — {len(all_events)} events extracted, not saved")
