@@ -1893,24 +1893,24 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # Timely API venues — bypass Selenium + LLM entirely
     if venue.get('timely_calendar_id'):
         events = scrape_timely_api(venue, mode)
-        return events, check_canceled_events(venue_key, events)
+        return events, (0 if dry_run else check_canceled_events(venue_key, events))
 
     # SeeTickets venues — scrape with Selenium but parse with custom HTML parser, no LLM
     if venue.get('seetickets'):
         _, html = scrape_page(venue['url'], wait_time=venue.get('wait_time', 3),
                             scroll_count=venue.get('scroll_count', 1),load_more_id=venue.get('load_more_id'))
         events = parse_seetickets_html(html, venue)
-        return events, check_canceled_events(venue_key, events)
+        return events, (0 if dry_run else check_canceled_events(venue_key, events))
 
     # AJAX venues — fetch all paginated HTML fragments and parse with LLM in one go
     if venue.get('ajax_url'):
         events = ajax_scrape(venue, mode)
-        return events, check_canceled_events(venue_key, events)
+        return events, (0 if dry_run else check_canceled_events(venue_key, events))
 
     # Google Calendar ICS feed — bypass Selenium + LLM entirely
     if venue.get('ical_url'):
         events = scrape_google_ics(venue, mode)
-        return events, check_canceled_events(venue_key, events)
+        return events, (0 if dry_run else check_canceled_events(venue_key, events))
 
     debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
@@ -2133,7 +2133,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # event, a changed event, or a canceled event — so whenever we've actually
     # processed changed content (any mode, not just weekly), check for all three.
     # The hash-check above already skipped this entirely if nothing changed.
-    canceled_count = check_canceled_events(venue_key, events)
+    # A dry run must not flag or cancel anything.
+    canceled_count = 0 if dry_run else check_canceled_events(venue_key, events)
 
     # Update stored hash
     if not dry_run:
@@ -3014,7 +3015,7 @@ if __name__ == "__main__":
         leak_report()
         exit(0)
 
-    if DATABASE_URL:
+    if DATABASE_URL and not args.dry_run:
         _conn = get_db_connection()
         migrate_status_columns(_conn.cursor(), True)
         _conn.commit()
