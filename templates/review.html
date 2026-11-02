@@ -373,6 +373,12 @@
             margin-left: 6px;
         }
 
+        .badge-flag {
+            margin-left: 6px;
+            font-size: 12px;
+            cursor: help;
+        }
+
         .badge-multi-day, .badge-multi-night {
             background: #ede7f6;
             color: #5e35b1;
@@ -856,6 +862,23 @@
         let recurringGroupFilter = null;
         let recurringGroupPreviousEvents = null;
 
+        // Extraction-circumstance flags (event.flags, a string array from the DB) — each one
+        // is a reason to double-check a specific event rather than trust it at face value.
+        // Deliberately a lookup table, not one badge per flag type hardcoded in the row
+        // template: adding a new flag elsewhere in the pipeline (see CLAUDE.md's dupe-
+        // hierarchy to-do) means adding one entry here, not touching the render logic.
+        const FLAG_META = {
+            split_boundary: { icon: '✂️', title: 'Extracted right at an LLM response split boundary — the real event text may have been cut across two separate extraction calls. Verify name/date/time before trusting this row.' }
+        };
+
+        function renderFlagBadges(event) {
+            if (!event.flags || !event.flags.length) return '';
+            return event.flags
+                .map(code => FLAG_META[code] || { icon: '⚠️', title: `Unrecognized flag: ${code}` })
+                .map(meta => `<span class="badge-flag" title="${esc(meta.title)}">${meta.icon}</span>`)
+                .join('');
+        }
+
         // Column definitions drive the header, filter row, colgroup, and sorting.
         // type: checkbox | text | select | selectyn | actions
         const COLUMNS = [
@@ -1221,6 +1244,7 @@
                         <span class="event-id">#${event.id}</span>
                         ${event.sold_out ? `<span class="badge-sold-out">🔴 Sold Out</span>` : ''}
                         ${event.date_changed ? `<span class="badge-date-changed">📅 Date Changed</span>` : ''}
+                        ${renderFlagBadges(event)}
                     </td>
                     <td>${event.start_date ? esc(event.start_date) : '<span class="cell-missing">—</span>'}${multiBadge}</td>
                     <td>${hasEndDate ? esc(event.end_date) : '<span class="cell-missing">—</span>'}</td>

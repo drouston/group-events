@@ -132,6 +132,7 @@ def init_db():
         # here (not just in universal_scraper.py) since this web service is deployed separately
         # from the cron scraper and can't assume the scraper's own migration ran first.
         c.execute('''ALTER TABLE events ADD COLUMN IF NOT EXISTS recurring TEXT''')
+        c.execute('''ALTER TABLE events ADD COLUMN IF NOT EXISTS flags TEXT''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id SERIAL PRIMARY KEY,
@@ -222,8 +223,11 @@ def init_db():
         # consistent with the Postgres branch above for the same reason: CREATE TABLE IF NOT
         # EXISTS is a no-op against an already-existing local dev DB).
         c.execute("PRAGMA table_info(events)")
-        if 'recurring' not in {row[1] for row in c.fetchall()}:
+        existing_event_cols = {row[1] for row in c.fetchall()}
+        if 'recurring' not in existing_event_cols:
             c.execute('''ALTER TABLE events ADD COLUMN recurring TEXT''')
+        if 'flags' not in existing_event_cols:
+            c.execute('''ALTER TABLE events ADD COLUMN flags TEXT''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS past_events
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -887,7 +891,7 @@ def filter_events():
     query = '''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                multi_day, venue, location, city, state,
                price, ticket_url, venue_url, description, genre, confidence, notes, status, created_at,
-               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id, recurring
+               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id, recurring, flags
                FROM events WHERE 1=1'''
     params = []
     
@@ -981,7 +985,8 @@ def filter_events():
             'openers': row[25],
             'event_url': row[26],
             'duplicate_of_id': row[27],
-            'recurring': row[28]
+            'recurring': row[28],
+            'flags': json.loads(row[29]) if row[29] else []
         }
         event['overall_confidence'] = calculate_confidence(event)
         events.append(event)

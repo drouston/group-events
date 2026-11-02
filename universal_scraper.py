@@ -3,6 +3,7 @@ import json
 import re
 import time
 import sqlite3
+from collections import defaultdict
 from dateutil.utils import today
 from difflib import SequenceMatcher
 from urllib.parse import urljoin, urlparse
@@ -104,7 +105,13 @@ VENUES = {
         # occurrence (not a reused profile/template link) — safe to match on ticket_url alone
         # and treat a date difference as a correction rather than a new event. This is what
         # let 51 duplicate rows accumulate here undetected before the cleanup that day.
-        "dupe_use_start_date": False
+        "dupe_use_start_date": False,
+        # Added 2026-10-22: event_url is always just venue_url verbatim — Heights Theater has
+        # no real per-event pages of its own, everything routes through Prekindle. Left
+        # non-null, that generic shared value made detect_url_date_conflicts() flag nearly
+        # every event here as a date-drift duplicate of whichever row had the lowest id —
+        # same class of bug already fixed at HOB/Punch Line/Toyota Center, missed here.
+        "unreliable_urls": "event_url"
     },
     "last_concert": {
         "name": "Last Concert Cafe",
@@ -1558,7 +1565,26 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
         second_half = body[split_at:] + links_suffix
         result_a = extract_events_with_llm_raw(first_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
         result_b = extract_events_with_llm_raw(second_half, venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
-        return {'events': result_a.get('events', []) + result_b.get('events', [])}
+        # The split is a blind character-count cut, not event-aware — an event block
+        # straddling the boundary can get a partial, independent (mis)read from either half.
+        # Confirmed on Heights Theater: one real event ("The Moth Houston GrandSLAM") came
+        # back twice, same ticket_url, with two different dates (one matching the page, one
+        # hallucinated). An earlier version of this code tried to dedupe the merge by URL —
+        # removed 2026-10-19: that only works when both halves happen to agree, and has no
+        # way to tell which copy is correct when they don't (and silently can't dedupe at all
+        # for events with no ticket_url/event_url to key on, which overlap would only make
+        # worse). Flagging for human review, not silently resolving, is the honest approach —
+        # see the `flags` column and the dupe-detection-hierarchy to-do in CLAUDE.md, which
+        # needs to treat this as a known-uncertain input rather than an ordinary extraction.
+        # Only the two events actually adjacent to the cut are marked, not the whole batch —
+        # everything else in either half was read with full context and isn't suspect.
+        events_a = result_a.get('events', [])
+        events_b = result_b.get('events', [])
+        if events_a:
+            events_a[-1].setdefault('flags', []).append('split_boundary')
+        if events_b:
+            events_b[0].setdefault('flags', []).append('split_boundary')
+        return {'events': events_a + events_b}
 
 def parse_white_oak_html(html):
     """Parse White Oak events directly from HTML"""
@@ -2019,6 +2045,17 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
                 (href for title, href in toyota_tickets.items() if title in event_name_lower),
                 None
             )
+        # Arena Theatre's page has no visible text for any event at all — not even a label,
+        # just bare links — so the LLM has to read the date from digits buried in the URL
+        # slug (/event/MMDDYY-ticket-.../). Confirmed 2026-10-22: it decodes the first link's
+        # date correctly, then drifts into a hallucinated ~weekly-incrementing sequence for
+        # every one after that, completely disconnected from each link's own slug. The slug
+        # format is fixed, so correct it deterministically instead of trusting that readout.
+        if venue_key == 'arena_theatre' and event.get('event_url'):
+            slug_date = re.search(r'/event/(\d{2})(\d{2})(\d{2})-', event['event_url'])
+            if slug_date:
+                mm, dd, yy = slug_date.groups()
+                event['start_date'] = f"20{yy}-{mm}-{dd}"
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
@@ -2060,6 +2097,25 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             if event.get('event_url'):
                 event['event_url'] = re.sub(event['strip_end_url'], '', event['event_url'])
 
+    # A ticket_url/event_url shared by 2+ differently-named events in this same scrape is a
+    # strong signal of a generic/shared page (a seasonal campaign link, a venue-wide landing
+    # page) rather than a genuine per-event identifier — null it for just those events, not
+    # venue-wide, so a venue whose links are normally fine doesn't lose good data over one
+    # promotional page. Keyed on name so a legitimately recurring show (same name, same link,
+    # many real dates — see the `recurring` column) isn't caught by this. Confirmed real case:
+    # Doc's Jazz Club's "christmas-at-docs-2026" campaign page landing in ticket_url for 19
+    # different shows — the same root cause already fixed venue-wide for Miller Outdoor/Punch
+    # Line/Heights Theater, but those venues' shared link was on EVERY event, not just a
+    # seasonal subset, so a blanket unreliable_urls would be too broad here.
+    for field in ('ticket_url', 'event_url'):
+        names_by_url = defaultdict(set)
+        for event in events:
+            if event.get(field):
+                names_by_url[event[field]].add(event.get('name', ''))
+        for event in events:
+            if event.get(field) and len(names_by_url[event[field]]) > 1:
+                event[field] = None
+
     # A hash change means the page's content moved for one of three reasons: a new
     # event, a changed event, or a canceled event — so whenever we've actually
     # processed changed content (any mode, not just weekly), check for all three.
@@ -2067,7 +2123,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     canceled_count = check_canceled_events(venue_key, events)
 
     # Update stored hash
-    if not args.dry_run:
+    if not dry_run:
         update_stored_hash(venue_key, content_hash)
 
     return events, canceled_count
@@ -2159,6 +2215,11 @@ def save_to_database(events, mode='daily', auto_approve=False):
     conn = get_db_connection()
     c = conn.cursor()
     ph = '%s' if DATABASE_URL else '?'
+
+    # Idempotent — cheap no-op after the first run. Must happen here (not only in
+    # review_dashboard.py's init_db) since this INSERT runs every daily scrape, not just
+    # when the web service happens to restart.
+    c.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS flags TEXT")
 
     inserted = 0
     skipped = 0
@@ -2401,8 +2462,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
                             (name, start_date, end_date, doors_time, start_time, end_time,
                             multi_day, venue, location, city, state,
                             price, ticket_url, event_url, venue_url, description, genre, confidence, status, created_at,
-                            event_type, visible, sold_out, date_changed, openers, duplicate_of_id)
-                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+                            event_type, visible, sold_out, date_changed, openers, duplicate_of_id, flags)
+                            VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
                         (event['name'],
                         event.get('start_date'),
                         event.get('end_date'),
@@ -2421,7 +2482,12 @@ def save_to_database(events, mode='daily', auto_approve=False):
                         event_type, visible,
                         event.get('sold_out', False),
                         event.get('date_changed', False),
-                        event.get('openers'), duplicate_of_id))
+                        event.get('openers'), duplicate_of_id,
+                        # Extraction-circumstance flags (e.g. 'split_boundary') — a general,
+                        # extensible list rather than a one-off boolean column per signal, so
+                        # a future flag (see CLAUDE.md's dupe-hierarchy to-do) is just a new
+                        # code, not a new migration.
+                        json.dumps(event.get('flags', []))))
             inserted += 1
         except Exception as e:
             print(f"Error inserting {event['name']}: {e}")
