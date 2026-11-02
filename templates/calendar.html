@@ -552,6 +552,9 @@
         }
 
         function priceCell(e) {
+            if (e.event_status === 'postponed') {
+                return `<span class="sold-out-link">Postponed</span>`;
+            }
             if (e.sold_out) {
                 const link = e.ticket_url || e.event_url || e.venue_url;
                 return link

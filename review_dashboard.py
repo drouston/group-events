@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from difflib import SequenceMatcher
+from status_model import migrate_status_columns
 
 CENTRAL = ZoneInfo('America/Chicago')
 
@@ -281,6 +282,8 @@ def init_db():
         ):
             if col not in existing_cols:
                 c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
+
+    migrate_status_columns(c, bool(DATABASE_URL))
 
     conn.commit()
     conn.close()
@@ -599,7 +602,7 @@ def calendar():
 
     query = f'''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                          multi_day, venue, location, city,
-                         price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url
+                         price, genre, description, event_type, sold_out, event_url, ticket_url, venue_url, event_status
                          FROM events
                          WHERE status = 'approved'
                          AND visible = {vis}
@@ -632,7 +635,8 @@ def calendar():
             'sold_out': row[15] if row[15] is not None else False,
             'event_url': row[16],
             'ticket_url': row[17],
-            'venue_url': row[18]
+            'venue_url': row[18],
+            'event_status': row[19]
         })
     conn.close()
 
@@ -755,11 +759,13 @@ def do_approve_event(event_data):
     c = conn.cursor()
     now = datetime.now().isoformat()
     if DATABASE_URL:
-        c.execute('''UPDATE events SET status = 'approved', approved_at = %s
+        c.execute('''UPDATE events SET review_status = 'approved', status = 'approved', approved_at = %s,
+                     event_status = CASE WHEN event_status = 'canceled' THEN 'scheduled' ELSE event_status END
                      WHERE id = %s''',
                   (now, event_data['id']))
     else:
-        c.execute('''UPDATE events SET status = 'approved', approved_at = ?
+        c.execute('''UPDATE events SET review_status = 'approved', status = 'approved', approved_at = ?,
+                     event_status = CASE WHEN event_status = 'canceled' THEN 'scheduled' ELSE event_status END
                      WHERE id = ?''',
                   (now, event_data['id']))
     conn.commit()
@@ -782,11 +788,11 @@ def do_reject_event(event_data):
     conn = get_db_connection()
     c = conn.cursor()
     if DATABASE_URL:
-        c.execute('UPDATE events SET status = %s WHERE id = %s',
-                  ('rejected', event_data['id']))
+        c.execute("UPDATE events SET review_status = 'rejected', status = 'rejected' WHERE id = %s",
+                  (event_data['id'],))
     else:
-        c.execute('UPDATE events SET status = ? WHERE id = ?',
-                  ('rejected', event_data['id']))
+        c.execute("UPDATE events SET review_status = 'rejected', status = 'rejected' WHERE id = ?",
+                  (event_data['id'],))
     conn.commit()
     conn.close()
 
@@ -891,7 +897,8 @@ def filter_events():
     query = '''SELECT id, name, start_date, end_date, doors_time, start_time, end_time,
                multi_day, venue, location, city, state,
                price, ticket_url, venue_url, description, genre, confidence, notes, status, created_at,
-               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id, recurring, flags
+               event_type, visible, sold_out, date_changed, openers, event_url, duplicate_of_id, recurring, flags,
+               review_status, event_status
                FROM events WHERE 1=1'''
     params = []
     
@@ -899,6 +906,9 @@ def filter_events():
         if filters['status'] == 'pending':
             query += f' AND status IN ({ph}, {ph})'
             params.extend(['pending', 'possible_duplicate'])
+        elif filters['status'] in ('tentative', 'postponed'):
+            query += f' AND event_status = {ph}'
+            params.append(filters['status'])
         else:
             query += f' AND status = {ph}'
             params.append(filters['status'])
@@ -986,7 +996,9 @@ def filter_events():
             'event_url': row[26],
             'duplicate_of_id': row[27],
             'recurring': row[28],
-            'flags': json.loads(row[29]) if row[29] else []
+            'flags': json.loads(row[29]) if row[29] else [],
+            'review_status': row[30],
+            'event_status': row[31]
         }
         event['overall_confidence'] = calculate_confidence(event)
         events.append(event)

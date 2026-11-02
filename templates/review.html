@@ -660,6 +660,8 @@
                     <option value="all">All Events</option>
                     <option value="pending" selected>Pending Review</option>
                     <option value="approved">Approved</option>
+                    <option value="tentative">Tentative (missing once)</option>
+                    <option value="postponed">Postponed</option>
                     <option value="canceled">Canceled</option>
                     <option value="rejected">Rejected</option>
                     <option value="date_changed">Date Changed</option>
@@ -895,6 +897,12 @@
             { key: 'url',        label: 'URL',      type: 'selectyn', width: 85,  sortable: true },
             { key: null,         label: 'Actions',  type: 'actions',  width: 140, sortable: false },
         ];
+
+        // Second status axis: what is happening to the show, independent of review.
+        const EVENT_STATUS_BADGES = {
+            tentative: '<span class="status-badge status-pending" title="Missing from the latest scrape. Confirmed canceled if missing again.">Tentative</span>',
+            postponed: '<span class="status-badge status-pending">Postponed</span>'
+        };
 
         const STATUS_LABELS = {
             pending: 'Pending Review',
@@ -1253,6 +1261,7 @@
                     <td title="${esc(event.location || '')}">${event.location ? esc(event.location) : '<span class="cell-missing">—</span>'}</td>
                     <td class="status-cell no-clip">
                         <span class="status-badge ${statusBadge}">${statusText}</span>
+                        ${EVENT_STATUS_BADGES[event.event_status] || ''}
                         ${pillActions}
                     </td>
                     <td class="no-clip">${dupCell}</td>

@@ -6,6 +6,7 @@ import sqlite3
 from collections import defaultdict
 from dateutil.utils import today
 from difflib import SequenceMatcher
+from status_model import migrate_status_columns
 from urllib.parse import urljoin, urlparse
 import requests
 from datetime import datetime, timedelta
@@ -2750,7 +2751,7 @@ def archive_past_events(buffer_days=1):
                  multi_day, venue, location, city, state,
                  price, ticket_url, description, genre, confidence, notes, status,
                  created_at, approved_at, event_type, visible, sold_out, date_changed,
-                 openers, event_url
+                 openers, event_url, review_status, event_status
                  FROM events
                  WHERE status IN ('approved', 'possible_duplicate', 'rejected', 'canceled', 'pending') AND start_date < %s''', (cutoff,))
     rows = c.fetchall()
@@ -2763,13 +2764,13 @@ def archive_past_events(buffer_days=1):
                           multi_day, venue, location, city, state,
                           price, ticket_url, description, genre, confidence, notes, status,
                           created_at, approved_at, archived_at, event_type, visible, sold_out,
-                          date_changed, openers, event_url)
-                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                          date_changed, openers, event_url, review_status, event_status)
+                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                       (row[1], row[2], row[3], row[4], row[5], row[6], row[7],
                        row[8], row[9], row[10], row[11], row[12],
                        row[13], row[14], row[15], row[16], row[17], row[18], row[19],
                        row[20], archived_at, row[21], row[22], row[23], row[24],
-                       row[25], row[26]))
+                       row[25], row[26], row[27], row[28]))
             c.execute('DELETE FROM events WHERE id = %s', (row[0],))
             archived += 1
         except Exception as e:
@@ -2797,6 +2798,12 @@ if __name__ == "__main__":
     parser.add_argument('--detect-duplicates', action='store_true',
                         help='Scan existing events table for duplicates and flag them')
     args = parser.parse_args()
+
+    if DATABASE_URL:
+        _conn = get_db_connection()
+        migrate_status_columns(_conn.cursor(), True)
+        _conn.commit()
+        _conn.close()
 
     init_db()
 
