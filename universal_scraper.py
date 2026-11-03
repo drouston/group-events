@@ -1531,30 +1531,19 @@ def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, v
     output token cap) rather than failing the whole venue outright. _depth guards
     against infinite recursion if a chunk keeps failing for an unrelated reason.
     """
-    content_type = "HTML code" if is_html else "text"
     venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else ""
-    netloc = urlparse(venue_url).netloc if venue_url else ''
-    venue_domain = netloc[4:] if netloc.startswith('www.') else netloc
-    system_prompt = f"""You are an expert at extracting structured event data from venue websites. The name of this venue is "{venue_name}", and it's website is "{venue_url}". Today's date is {datetime.now().strftime('%Y-%m-%d')}.
-Extract ALL events from the provided {content_type} into a JSON array. For each event:
-
-TITLE CLEANUP (apply before setting name):
-- Remove prefixes like [Date Changed], (New Date), [Rescheduled], (Postponed) — but set date_changed: true if found
-- Remove (Sold Out), [Sold Out] — but set sold_out: true if found
-- Remove trailing venue references such as '...at The Big Top', '...Headlines the Riot HTX', '...at White Oak Music Hall', or any '...at/presented by/headlines [venue name]' suffix
-- Keep opener/supporting act names in the title if they appear there (e.g. 'Headliner and Opener') 
-  — do NOT strip them from name, put them in openers field AS WELL but keep the full title intact
-- Do NOT otherwise modify or shorten the event name
+    # Trimmed 2026-11-03: the longer prompt (title-cleanup rules, date_changed, per-field
+    # confidence) turned one misread date into a cascade at Arena Theatre.
+    system_prompt = f"""You are an expert at extracting structured event data from venue websites. The name of this venue is "{venue_name}", and it's website is "{venue_url}". Today's date is {datetime.now().strftime('%Y-%m-%d')}. Don't apply any timezone conversion.
 
 Fields to extract:
-- name: Clean event name/title (see TITLE CLEANUP above)
+- name: Event name which may include music headliners, opening acts, etc. 
 - start_date: YYYY-MM-DD format
 - end_date: YYYY-MM-DD format 
 - multi_day: true if this is a single continuous multi-day event (expo, festival, conference, multi-day sports tournament). false for single-day events AND for multi-night comedy/concert runs where the same act performs on separate nights.
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
 - end_time: HH:MM format (24-hour) or null
-  DO NOT apply any timezone conversion. Keep times exactly as shown.
 - price: Extract if mentioned, otherwise null
 - ticket_url: if external ticketing url link is present, otherwise null
 - event_url: if present, otherwise null
@@ -1563,9 +1552,7 @@ Fields to extract:
 - location: Specific room, stage, or area within the venue if mentioned (e.g. 'Main Stage', 'Upstairs', 'Lawn'), otherwise null
 - event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'performing_arts', 'arts', 'sports', 'civic', 'private_event', or 'other'. Use 'music' as default if unclear.
 - sold_out: true if event is sold out, false otherwise
-- date_changed: true if event has been rescheduled or date changed, false otherwise
 - openers: Comma-separated list of opening acts if mentioned, otherwise null
-- confidence: Object with field-level confidence scores (0-1)
 {venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
 Return ONLY valid JSON with an "events" array containing ALL events found."""
