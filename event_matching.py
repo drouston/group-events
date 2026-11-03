@@ -308,9 +308,7 @@ def decide_batch(events, rows_by_venue, venue_configs, today=None):
             continue
         sim, old = max(candidates, key=lambda x: x[0])
         old_missing = old['id'] not in claimed and best_against.get(old['id'], -999) < REVIEW_AT
-        if ev.get('date_changed'):
-            d.update(decision='reschedule', target_id=old['id'], reason='date_changed_flag')
-        elif old_missing:
+        if old_missing:
             d.update(decision='review', target_id=old['id'], reason='possible_postponement')
         else:
             d.update(decision='insert', target_id=None, reason='second_booking')

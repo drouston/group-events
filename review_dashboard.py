@@ -334,26 +334,6 @@ def load_pending_events():
     conn.close()
     return events
 
-# Calculate overall confidence score
-def calculate_confidence(event):
-    if not event.get('confidence'):
-        return 0.5  # Default medium confidence
-    
-    conf = event['confidence']
-    scores = []
-    
-    # Weight important fields more
-    if 'name' in conf:
-        scores.append(conf['name'] * 2)  # Name is critical
-    if 'start_date' in conf:
-        scores.append(conf['start_date'] * 2)  # Date is critical
-    if 'time' in conf:
-        scores.append(conf.get('time', 0.5))
-    if 'genre' in conf:
-        scores.append(conf.get('genre', 0.5))
-    
-    return sum(scores) / len(scores) if scores else 0.5
-
 # Save event to database
 def save_event(event_data):
     conn = get_db_connection()
@@ -528,12 +508,6 @@ def delete_published():
 @app.route('/dashboard-uinizti3')
 def index():
     events = load_pending_events()
-    
-    for event in events:
-        event['overall_confidence'] = calculate_confidence(event)
-    
-    # Sort by confidence (lowest first = needs most review)
-    events.sort(key=lambda x: x['overall_confidence'])
     
     return render_template('review.html', events=events)
 
@@ -952,7 +926,6 @@ def filter_events():
     
     sort_mapping = {
         'start_date': 'start_date',
-        'confidence': 'confidence',
         'venue': 'venue',
         'created': 'created_at',
         'name': 'name'
@@ -1000,7 +973,6 @@ def filter_events():
             'review_status': row[30],
             'event_status': row[31]
         }
-        event['overall_confidence'] = calculate_confidence(event)
         events.append(event)
     
     orig_ids = [e['duplicate_of_id'] for e in events if e.get('duplicate_of_id')]
@@ -1013,14 +985,6 @@ def filter_events():
                 event['duplicate_of'] = orig_map[event['duplicate_of_id']]
     
     conn.close()
-    
-    if filters.get('confidence_level'):
-        if filters['confidence_level'] == 'low':
-            events = [e for e in events if e['overall_confidence'] < 0.6]
-        elif filters['confidence_level'] == 'medium':
-            events = [e for e in events if 0.6 <= e['overall_confidence'] < 0.8]
-        elif filters['confidence_level'] == 'high':
-            events = [e for e in events if e['overall_confidence'] >= 0.8]
     
     if filters.get('has_duplicates'):
         events = [e for e in events if e['status'] == 'possible_duplicate']

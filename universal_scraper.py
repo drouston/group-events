@@ -1540,7 +1540,6 @@ Fields to extract:
 - name: Event name which may include music headliners, opening acts, etc. 
 - start_date: YYYY-MM-DD format
 - end_date: YYYY-MM-DD format 
-- multi_day: true if this is a single continuous multi-day event (expo, festival, conference, multi-day sports tournament). false for single-day events AND for multi-night comedy/concert runs where the same act performs on separate nights.
 - doors_time: HH:MM format (24-hour) or null
 - start_time: HH:MM format (24-hour) or null
 - end_time: HH:MM format (24-hour) or null
@@ -2195,6 +2194,8 @@ def expand_multi_night_events(events):
                 expanded.append(night_event)
                 day += timedelta(days=1)
         else:
+            # multi_day comes from venue config, not the LLM: a range kept unexpanded is one continuous event.
+            event['multi_day'] = bool(start and end and str(end)[:10] != start)
             expanded.append(event)
     return expanded
 
@@ -2537,8 +2538,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     changes['end_time'] = event['end_time']
                 if event.get('sold_out', False) != ex_sold_out:
                     changes['sold_out'] = event.get('sold_out', False)
-                if event.get('date_changed', False) != ex_date_changed:
-                    changes['date_changed'] = event.get('date_changed', False)
+                if 'date_changed' in event and event['date_changed'] != ex_date_changed:
+                    changes['date_changed'] = event['date_changed']
                 if event.get('openers') and event.get('openers') != ex_openers:
                     changes['openers'] = event['openers']
                 if event.get('price') and event.get('price') != ex_price:
