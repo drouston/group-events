@@ -490,9 +490,6 @@ VENUES = {
     "arena_theatre": {
         "name": "Arena Theatre",
         "url": "https://arenahouston.com/",
-        # Show date is in the link: /event/MMDDYY-ticket-<slug>/. Sets both dates and recovers
-        # links the LLM drops.
-        "link_date_pattern": r"/event/(\d{2})(\d{2})(\d{2})-",
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
@@ -1874,40 +1871,6 @@ def pre_filter_dates(venue_name, page_text):
     if new_dates:
         print(f"  ℹ {len(new_dates)} potentially new date(s) detected")
 
-def _date_from_link(venue, link):
-    """YYYY-MM-DD from a link whose URL carries the show date (venue config link_date_pattern,
-    three groups: month, day, two-digit year), else None."""
-    pattern = venue.get('link_date_pattern')
-    m = re.search(pattern, link or '') if pattern else None
-    if not m:
-        return None
-    mm, dd, yy = m.groups()
-    return f"20{yy}-{mm}-{dd}"
-
-
-def _recover_dropped_links(venue, page_text, events):
-    """For venues whose links carry the date, add any event link on the page that the LLM
-    left out (Arena, 2026-10-29: 14 shows returned with no links). Flagged for review; the
-    name comes from the URL slug."""
-    pattern = venue.get('link_date_pattern')
-    if not pattern:
-        return []
-    returned = {(e.get('event_url') or e.get('ticket_url') or '').rstrip('/') for e in events}
-    recovered = []
-    for link in dict.fromkeys(re.findall(r'https?://[^\s\]]+', page_text)):
-        link = link.rstrip('/')
-        date = _date_from_link(venue, link + '/')
-        if not date or link in returned:
-            continue
-        slug = urlparse(link).path.strip('/').split('/')[-1]
-        words = [w for w in slug.split('-') if w and w.lower() != 'ticket' and not w.isdigit()]
-        recovered.append({'name': ' '.join(w.capitalize() for w in words) or link, 'start_date': date,
-                          'end_date': date, 'event_url': link + '/', 'flags': ['recovered_from_link']})
-    if recovered:
-        print(f"  ↺ Recovered {len(recovered)} event link(s) the LLM left out")
-    return recovered
-
-
 def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
@@ -2037,7 +2000,6 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
-    events += _recover_dropped_links(venue, page_text, events)
 
     # Toyota Center's ticket_url can't be trusted from the LLM extraction at all (see
     # get_toyota_carousel_tickets) — rebuilt here directly from the carousel instead, once
@@ -2094,10 +2056,13 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         # date correctly, then drifts into a hallucinated ~weekly-incrementing sequence for
         # every one after that, completely disconnected from each link's own slug. The slug
         # format is fixed, so correct it deterministically instead of trusting that readout.
-        link_date = _date_from_link(venue, event.get('event_url') or event.get('ticket_url'))
-        if link_date:
-            # Single-night shows; a leftover LLM end date would otherwise become a range.
-            event['start_date'] = event['end_date'] = link_date
+        if venue_key == 'arena_theatre' and event.get('event_url'):
+            slug_date = re.search(r'/event/(\d{2})(\d{2})(\d{2})-', event['event_url'])
+            if slug_date:
+                mm, dd, yy = slug_date.groups()
+                event['start_date'] = f"20{yy}-{mm}-{dd}"
+                # Arena shows are single nights; a leftover LLM end date would become a range.
+                event['end_date'] = event['start_date']
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
@@ -2642,7 +2607,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                 (ex_id, ex_name, ex_start_date, ex_start, ex_doors, ex_end, ex_sold_out,
                  ex_date_changed, ex_openers, ex_price, ex_ticket_url, ex_event_url, ex_status) = url_match
                 changes = {}
-                if event['name'] != ex_name and 'recovered_from_link' not in event.get('flags', []):
+                if event['name'] != ex_name:
                     changes['name'] = event['name']
                 if event.get('start_time') is not None and event.get('start_time') != ex_start:
                     changes['start_time'] = event['start_time']
