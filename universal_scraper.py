@@ -2377,6 +2377,33 @@ def match_report(days=7):
     conn.close()
 
 
+def check_arena_dates():
+    """Read-only: compare each active future Arena row's date with the date the venue's own
+    link carries (/event/MMDDYY-). Verification only; nothing is corrected."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    today = datetime.now().date().isoformat()
+    c.execute("""SELECT id, name, start_date, status, created_at, ticket_url, event_url FROM events
+                 WHERE venue = %s AND start_date >= %s AND status IN ('pending', 'approved', 'possible_duplicate')
+                 ORDER BY start_date""", (VENUES['arena_theatre']['name'], today))
+    rows = c.fetchall()
+    conn.close()
+    wrong, no_link = [], 0
+    for rid, name, sd, status, created, tu, eu in rows:
+        m = re.search(r'/event/(\d{2})(\d{2})(\d{2})-', eu or tu or '')
+        if not m:
+            no_link += 1
+            continue
+        link_date = f"20{m.group(3)}-{m.group(1)}-{m.group(2)}"
+        if link_date != sd:
+            wrong.append((rid, status, sd, link_date, (created or '')[:10], name))
+    print(f"\n=== Arena date check: {len(wrong)} of {len(rows)} active rows disagree with their link "
+          f"({no_link} have no link) ===")
+    for rid, status, sd, link_date, created, name in wrong:
+        print(f"  #{rid} [{status}] stored {sd}, link says {link_date}, created {created}: {name}")
+    return wrong
+
+
 def leak_report(write=False):
     """Same-venue, same-date active pairs scoring 55+ with no duplicate link between them;
     each is a duplicate the save path let through. City calendar venues are skipped.
@@ -3058,6 +3085,8 @@ if __name__ == "__main__":
                         help='Scan existing events table for duplicates and flag them')
     parser.add_argument('--match-report', type=int, nargs='?', const=7, default=None, metavar='DAYS',
                         help='Compare unified-matching shadow decisions with the legacy path (read-only)')
+    parser.add_argument('--check-arena-dates', action='store_true',
+                        help="Compare active Arena rows' dates with the dates in their links (read-only)")
     parser.add_argument('--leak-report', action='store_true',
                         help='List active same-day pairs the scorer says are unlinked duplicates (read-only)')
     args = parser.parse_args()
@@ -3067,6 +3096,9 @@ if __name__ == "__main__":
         exit(0)
     if args.leak_report:
         leak_report()
+        exit(0)
+    if args.check_arena_dates:
+        check_arena_dates()
         exit(0)
 
     if DATABASE_URL and not args.dry_run:
