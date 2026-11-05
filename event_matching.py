@@ -282,6 +282,16 @@ def _decide_venue(idxs, events, rows, profile, today):
             claimed[hit['id']] = i
             out[i].update(decision='reschedule', target_id=hit['id'], reason='source_key_date_change')
 
+    # Key-matched events are still scored against their block, decision unchanged, so other
+    # stored copies of the same show don't look missing to the cancellation check.
+    for i, ev in evs.items():
+        if out[i]['reason'] != 'source_key':
+            continue
+        block = [r for r in rows if in_block(ev, r)]
+        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': block}
+        for r in block:
+            best_against[r['id']] = max(best_against.get(r['id'], -999), score(ev, r, ctx)[0])
+
     # 2. Score every remaining event against its candidate rows.
     open_rows = [r for r in rows if r['id'] not in claimed]
     pairs = []

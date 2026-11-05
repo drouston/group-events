@@ -148,10 +148,21 @@ def test_recurring_series_inherited_at_insert():
     assert decisions[0]['decision'] == 'insert' and decisions[0]['recurring'] == 'yes', decisions
 
 
+def test_key_match_does_not_leave_stored_copies_missing():
+    from datetime import date
+    rows = [row(1, 'Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/123'),
+            row(2, 'Jane Doe', '2026-12-01', '20:00')]          # an older stored copy
+    decisions, claimed, best, _ = em.decide_batch(
+        [listing('Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/123')], {V: rows}, {'v': KEYED},
+        today=date(2026, 11, 1))
+    assert decisions[0]['target_id'] == 1
+    assert em.missing_rows(rows, claimed, best, set()) == [], (claimed, best)
+
+
 if __name__ == '__main__':
     for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
               test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
-              test_recurring_series_inherited_at_insert):
+              test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing):
         try:
             t()
             print('PASS', t.__name__)
