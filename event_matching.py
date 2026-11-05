@@ -151,6 +151,9 @@ def url_score(listing, cand, ctx):
 
 
 def title_score(listing, cand, ctx):
+    # A name rebuilt from a URL slug carries no title evidence, like a placeholder.
+    if 'recovered_from_link' in (listing.get('flags') or []):
+        return 0
     if _is_placeholder(listing.get('name')) or _is_placeholder(cand.get('name')):
         return 0
     if utils.default_process(listing['name']) == utils.default_process(cand['name']):
