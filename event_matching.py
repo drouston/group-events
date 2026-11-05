@@ -25,34 +25,41 @@ PLACEHOLDER = re.compile(r'^(tba|tbd|to be announced|special event|private event
 # ---------- venue identity profile ----------
 
 def venue_profile(venue_config):
-    """Per-venue identity rules, defined once. link_trust maps each link field to
-    key | evidence | ignore | drop. Falls back to the legacy flags for venues without one."""
+    """Per-venue identity rules, read only from the unified-matching settings:
+    link_trust (key | evidence | ignore | drop per link field, default evidence),
+    multi_show and link_ignore_patterns. Links to the venue's own pages never count."""
     cfg = venue_config or {}
     trust = {f: 'evidence' for f in LINK_FIELDS}
-    unreliable = cfg.get('unreliable_urls')
-    if unreliable is True:
-        trust = {f: 'ignore' for f in LINK_FIELDS}
-    elif unreliable in LINK_FIELDS:
-        trust[unreliable] = 'ignore'
     trust.update(cfg.get('link_trust', {}))
+    site = re.match(r'(https?://[^/]+)', cfg.get('url') or '')
+    generic = {u.rstrip('/') for u in (cfg.get('url'), cfg.get('venue_url'), site.group(1) if site else None) if u}
     return {
         'link_trust': trust,
         'ignore_patterns': [re.compile(p) for p in cfg.get('link_ignore_patterns', [])],
-        'multi_show': bool(cfg.get('dupe_check_start_time')),
-        'auto_approve': bool(cfg.get('auto_approve')),
+        'generic_links': generic,
+        'multi_show': bool(cfg.get('multi_show')),
+        'excluded': bool(cfg.get('ical_url')),
     }
+
+
+def _link(record, field):
+    # Scraped events carry the links as extracted, before any legacy nulling.
+    extracted = record.get('extracted_links')
+    return extracted.get(field) if extracted is not None else record.get(field)
 
 
 def usable_links(record, profile, levels=MATCHING_LEVELS, batch_ignored=()):
     """Link values from this record that matching may use, at the given trust levels."""
     out = set()
     for field in LINK_FIELDS:
-        value = record.get(field)
+        value = _link(record, field)
         if not value or profile['link_trust'].get(field) not in levels:
             continue
-        if value in batch_ignored or any(p.search(value) for p in profile['ignore_patterns']):
+        value = value.rstrip('/')
+        if value in batch_ignored or value in profile['generic_links'] \
+                or any(p.search(value) for p in profile['ignore_patterns']):
             continue
-        out.add(value.rstrip('/'))
+        out.add(value)
     return out
 
 
@@ -201,98 +208,152 @@ def in_block(listing, cand):
 
 # ---------- batch decisions ----------
 
-def decide_batch(events, rows_by_venue, venue_configs, today=None):
-    """Shadow decisions for one save batch. rows_by_venue: {venue name: [row dicts]} as the
-    DB stood before the batch. Returns one decision dict per event, in order."""
-    today = today or datetime.now().date()
-    decisions = []
-    claimed = {}           # row id -> index of the listing that claimed it
-    best_against = {}      # row id -> best score any listing reached against it
-    virtual = {}           # venue -> virtual rows for listings this batch would insert
+def looks_recurring(dates):
+    """Same weekday 3+ times, or a constant daily/weekly gap (mirrors _looks_recurring)."""
+    d = sorted({_date(x) for x in dates if _date(x)})
+    if len(d) < 2:
+        return False
+    gaps = {(d[i + 1] - d[i]).days for i in range(len(d) - 1)}
+    if len(d) == 2:
+        return gaps in ({1}, {7})
+    return (len(gaps) == 1 and gaps != {0}) or len({x.weekday() for x in d}) == 1
 
-    for idx, ev in enumerate(events):
-        venue = ev.get('venue')
-        profile = venue_profile(venue_configs.get(ev.get('venue_key')))
-        rows = rows_by_venue.get(venue, []) + virtual.get(venue, [])
-        ctx = {'profile': profile, 'batch_ignored': set(ev.get('batch_ignored_urls', [])), 'pool': []}
-        d = {'index': idx, 'decision': None, 'target_id': None, 'score': None, 'parts': None,
-             'runner_up_id': None, 'runner_up_score': None, 'reason': None}
 
-        # Source-key shortcut
-        keys = usable_links(ev, profile, levels=('key',), batch_ignored=ctx['batch_ignored'])
-        key_hit = next((r for r in rows if r.get('review_status') != 'rejected'
-                        and keys & usable_links(r, profile, levels=('key',))), None) if keys else None
-        if key_hit:
-            same_date = key_hit.get('start_date') == ev.get('start_date')
-            d.update(decision='update' if same_date else 'postpone_hold', target_id=key_hit['id'],
-                     reason='source_key' if same_date else 'source_key_date_change')
-            if same_date:
-                claimed.setdefault(key_hit['id'], idx)
-            decisions.append(d)
+def _batch_ignored_links(events, profile):
+    """Links shared by differently named events in one scrape identify a page, not an event."""
+    names = {}
+    for ev in events:
+        for link in usable_links(ev, profile):
+            names.setdefault(link, set()).add(utils.default_process(ev.get('name') or ''))
+    return {link for link, n in names.items() if len(n) > 1}
+
+
+def _anomalies(events, rows):
+    """Logged only, never decisive: batch shapes that have signalled extraction failures."""
+    found = []
+    per_date = {}
+    for ev in events:
+        per_date[ev.get('start_date')] = per_date.get(ev.get('start_date'), 0) + 1
+    if per_date:
+        usual = sorted(per_date.values())[len(per_date) // 2]
+        for d, n in per_date.items():
+            if n >= 10 and n >= 3 * max(usual, 1):
+                found.append(f'date_pileup:{d}:{n}')
+    by_link = {}
+    for ev in events:
+        for f in LINK_FIELDS:
+            if _link(ev, f):
+                by_link.setdefault(_link(ev, f).rstrip('/'), set()).add(ev.get('start_date'))
+    recurring_links = {(_link(r, f) or '').rstrip('/') for r in rows for f in LINK_FIELDS
+                       if r.get('recurring') in ('yes', 'possible')}
+    for link, dates in by_link.items():
+        if len(dates) >= 3 and link not in recurring_links:
+            found.append(f'link_many_dates:{len(dates)}')
+    return found
+
+
+def _decide_venue(idxs, events, rows, profile, today):
+    """Decisions for one venue's slice of a batch. Rows are assigned to events by score,
+    highest first, so page order never decides which event gets a row."""
+    evs = {i: events[i] for i in idxs}
+    batch_ignored = _batch_ignored_links(list(evs.values()), profile)
+    out = {i: {'index': i, 'decision': None, 'target_id': None, 'score': None, 'parts': None,
+               'runner_up_id': None, 'runner_up_score': None, 'reason': None, 'recurring': None}
+           for i in idxs}
+    claimed = {}        # row id -> event index
+    best_against = {}   # row id -> best score any event reached against it
+
+    # 1. Source key: a verified per-occurrence link is identity.
+    for i, ev in evs.items():
+        keys = usable_links(ev, profile, levels=('key',), batch_ignored=batch_ignored)
+        if not keys:
             continue
+        hit = next((r for r in rows if r.get('review_status') != 'rejected'
+                    and keys & usable_links(r, profile, levels=('key',))), None)
+        if not hit:
+            continue
+        best_against[hit['id']] = 999
+        if hit['id'] in claimed:
+            out[i].update(decision='batch_duplicate', target_id=hit['id'], reason='source_key')
+        elif hit.get('start_date') == ev.get('start_date'):
+            claimed[hit['id']] = i
+            out[i].update(decision='update', target_id=hit['id'], reason='source_key')
+        else:
+            claimed[hit['id']] = i
+            out[i].update(decision='reschedule', target_id=hit['id'], reason='source_key_date_change')
 
-        block = [r for r in rows if in_block(ev, r)]
-        ctx['pool'] = block
-        scored = sorted(((score(ev, r, ctx), r) for r in block), key=lambda x: -x[0][0])
-        for (total, _), r in scored:
+    # 2. Score every remaining event against its candidate rows.
+    open_rows = [r for r in rows if r['id'] not in claimed]
+    pairs = []
+    by_event = {}
+    for i, ev in evs.items():
+        if out[i]['decision']:
+            continue
+        block = [r for r in open_rows if in_block(ev, r)]
+        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': block}
+        scored = []
+        for r in block:
+            total, parts = score(ev, r, ctx)
+            scored.append((total, parts, r))
             best_against[r['id']] = max(best_against.get(r['id'], -999), total)
+            pairs.append((total, i, r['id']))
+        by_event[i] = sorted(scored, key=lambda x: -x[0])
 
-        # One-to-one: a row already claimed by an earlier listing is unavailable, unless this
-        # listing is a second copy of that earlier listing (an intra-batch duplicate).
-        available = []
-        for (total, parts), r in scored:
-            if r['id'] in claimed and total >= UPDATE_AT:
-                first = events[claimed[r['id']]]
-                if (title_similarity(first.get('name'), ev.get('name')) or 0) >= 85 and \
-                        first.get('start_date') == ev.get('start_date') and \
-                        first.get('start_time') == ev.get('start_time'):
-                    d.update(decision='batch_duplicate', target_id=r['id'], score=total, parts=parts)
-                    break
+    # 3. Assign rows highest score first; each event and each row at most once.
+    assigned = {}
+    for total, i, rid in sorted(pairs, key=lambda x: (-x[0], x[1])):
+        if total < REVIEW_AT or i in assigned or rid in claimed:
+            continue
+        assigned[i] = rid
+        claimed[rid] = i
+    for i, rid in assigned.items():
+        total, parts, _ = next(x for x in by_event[i] if x[2]['id'] == rid)
+        others = [x for x in by_event[i] if x[2]['id'] != rid]
+        d = out[i]
+        d.update(score=total, parts=parts, target_id=rid)
+        if others:
+            d.update(runner_up_id=others[0][2]['id'], runner_up_score=others[0][0])
+        if others and others[0][0] >= REVIEW_AT and total - others[0][0] < TIE_MARGIN:
+            d.update(decision='review', reason='tie')
+        else:
+            d['decision'] = 'update' if total >= UPDATE_AT else 'review'
+
+    # 4. An unassigned event that scores as an update against another event in this
+    #    scrape is a second copy of it.
+    primaries = [i for i in idxs if out[i]['decision'] is not None]
+    for i in idxs:
+        d = out[i]
+        if d['decision'] is not None:
+            continue
+        ev = evs[i]
+        best = None
+        for j in primaries:
+            other = dict(evs[j], id=f'new:{j}', review_status='pending')
+            if not in_block(ev, other):
                 continue
-            available.append(((total, parts), r))
-        if d['decision']:
-            decisions.append(d)
-            continue
+            total, parts = score(ev, other, {'profile': profile, 'batch_ignored': batch_ignored, 'pool': [other]})
+            if best is None or total > best[0]:
+                best = (total, parts, j)
+        if best and best[0] >= UPDATE_AT:
+            j = best[2]
+            target = out[j]['target_id'] if out[j]['decision'] in ('update', 'review') and out[j]['target_id'] else f'new:{j}'
+            d.update(decision='batch_duplicate', target_id=target, score=best[0], parts=best[1])
+        else:
+            if by_event.get(i):
+                top = by_event[i][0]
+                d.update(score=top[0], parts=top[1])
+            primaries.append(i)
 
-        if available:
-            (top, parts), best = available[0]
-            d.update(score=top, parts=parts, target_id=best['id'])
-            if len(available) > 1:
-                (second, _), runner = available[1]
-                d.update(runner_up_id=runner['id'], runner_up_score=second)
-            if top >= REVIEW_AT and len(available) > 1 and top - available[1][0][0] < TIE_MARGIN \
-                    and available[1][0][0] >= REVIEW_AT:
-                d.update(decision='review', reason='tie')
-            elif top >= UPDATE_AT:
-                d['decision'] = 'update'
-            elif top >= REVIEW_AT:
-                d['decision'] = 'review'
-        if d['decision'] == 'update' and isinstance(d['target_id'], str):
-            d['decision'] = 'batch_duplicate'  # matched an earlier listing in this same batch
-        if d['decision'] == 'update':
-            claimed.setdefault(d['target_id'], idx)
-        if d['decision'] is None:
-            d.update(decision='postpone_hold', target_id=None, reason='under_review_floor')
-        if d['decision'] in ('review', 'postpone_hold') or d['decision'] is None:
-            v = dict(ev, id=f'new:{idx}', review_status='pending')
-            virtual.setdefault(venue, []).append(v)
-            if d['decision'] == 'review':
-                claimed.setdefault(v['id'], idx)
-        decisions.append(d)
-
-    # Postponement routing runs once the whole batch is matched.
-    for d in decisions:
-        if d['decision'] != 'postpone_hold':
+    # 5. Postponement routing, once the whole batch is matched.
+    lookback = today - timedelta(days=POSTPONE_LOOKBACK_DAYS)
+    for i in idxs:
+        d = out[i]
+        if d['decision'] is not None:
             continue
-        ev = events[d['index']]
-        if d['reason'] == 'source_key_date_change':
-            d.update(decision='reschedule')
-            continue
-        venue = ev.get('venue')
-        lookback = today - timedelta(days=POSTPONE_LOOKBACK_DAYS)
+        ev = evs[i]
         evd = _date(ev.get('start_date'))
         candidates = []
-        for r in rows_by_venue.get(venue, []):
+        for r in rows:
             rd = _date(r.get('start_date'))
             if rd is None or evd is None or abs((rd - evd).days) <= 1 or rd < lookback:
                 continue
@@ -304,16 +365,61 @@ def decide_batch(events, rows_by_venue, venue_configs, today=None):
             if sim >= POSTPONE_TITLE_SIM:
                 candidates.append((sim, r))
         if not candidates:
-            d.update(decision='insert', target_id=None, reason='no_match')
-            continue
-        sim, old = max(candidates, key=lambda x: x[0])
-        old_missing = old['id'] not in claimed and best_against.get(old['id'], -999) < REVIEW_AT
-        if old_missing:
-            d.update(decision='review', target_id=old['id'], reason='possible_postponement')
+            d.update(decision='insert', reason='no_match')
         else:
-            d.update(decision='insert', target_id=None, reason='second_booking')
+            old = max(candidates, key=lambda x: x[0])[1]
+            if old['id'] not in claimed and best_against.get(old['id'], -999) < REVIEW_AT:
+                d.update(decision='review', target_id=old['id'], reason='possible_postponement')
+            else:
+                d.update(decision='insert', reason='second_booking')
 
-    return decisions, claimed, best_against
+    # 6. Recurrence at insert: inherit a confirmed series, or detect a new pattern.
+    for i in idxs:
+        d = out[i]
+        if d['decision'] != 'insert':
+            continue
+        ev = evs[i]
+        links = usable_links(ev, profile, batch_ignored=batch_ignored)
+        title = utils.default_process(ev.get('name') or '')
+        series = [r for r in rows if r.get('review_status') != 'rejected'
+                  and ((links and links & usable_links(r, profile))
+                       or utils.default_process(r.get('name') or '') == title)]
+        if any(r.get('recurring') == 'yes' for r in series):
+            d['recurring'] = 'yes'
+        elif series and looks_recurring([r['start_date'] for r in series] + [ev.get('start_date')]):
+            d['recurring'] = 'possible'
+
+    return out, claimed, best_against
+
+
+def decide_batch(events, rows_by_venue, venue_configs, today=None):
+    """Shadow decisions for one save batch against the DB as it stood before the batch.
+    rows_by_venue: {venue name: [row dicts]}. Returns one decision per event, in order,
+    plus the claimed rows, best score per row, and logged batch anomalies per venue."""
+    today = today or datetime.now().date()
+    groups = {}
+    for i, ev in enumerate(events):
+        groups.setdefault((ev.get('venue_key'), ev.get('venue')), []).append(i)
+    decisions = [None] * len(events)
+    claimed, best_against, anomalies = {}, {}, {}
+    for (key, venue), idxs in groups.items():
+        profile = venue_profile(venue_configs.get(key))
+        if profile['excluded']:
+            for i in idxs:
+                decisions[i] = {'index': i, 'decision': 'excluded', 'target_id': None, 'score': None,
+                                'parts': None, 'runner_up_id': None, 'runner_up_score': None,
+                                'reason': 'city_calendar', 'recurring': None}
+            continue
+        rows = rows_by_venue.get(venue, [])
+        out, c, b = _decide_venue(idxs, events, rows, profile, today)
+        for i in idxs:
+            decisions[i] = out[i]
+        claimed.update(c)
+        best_against.update(b)
+        found = _anomalies([events[i] for i in idxs], rows)
+        if found:
+            anomalies[venue] = found
+    return decisions, claimed, best_against, anomalies
 
 
 def missing_rows(active_rows, claimed, best_against, postponement_targets):
@@ -332,6 +438,8 @@ def agrees(shadow, legacy):
     sd, st = shadow['decision'], shadow['target_id']
     if sd == 'update':
         return lo in ('exact_skip', 'url_update', 'near_update') and lt == st
+    if sd == 'excluded':
+        return None
     if sd == 'reschedule':
         return lo == 'url_update' and lt == st
     if sd == 'review':

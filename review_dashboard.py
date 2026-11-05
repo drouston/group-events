@@ -181,8 +181,8 @@ def init_db():
         # that doesn't exist yet into a SELECT with ones that do fails the whole query, not
         # just that column, so this has to be proactive rather than left to a try/except.
         for col in ('new_events', 'canceled_events', 'total_pending', 'scrape_mode',
-                    'updated_events', 'date_corrections', 'content_changes', 'splits', 'error'):
-            default = "''" if col == 'scrape_mode' else ('NULL' if col == 'error' else '0')
+                    'updated_events', 'date_corrections', 'content_changes', 'splits', 'error', 'leak_pairs'):
+            default = "''" if col == 'scrape_mode' else ('NULL' if col in ('error', 'leak_pairs') else '0')
             coltype = 'TEXT' if col in ('scrape_mode', 'error') else 'INTEGER'
             c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} {coltype} DEFAULT {default}''')
 
@@ -278,7 +278,7 @@ def init_db():
             ('new_events', 'INTEGER', '0'), ('canceled_events', 'INTEGER', '0'),
             ('total_pending', 'INTEGER', '0'), ('scrape_mode', 'TEXT', "''"),
             ('updated_events', 'INTEGER', '0'), ('date_corrections', 'INTEGER', '0'),
-            ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'),
+            ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'), ('leak_pairs', 'INTEGER', 'NULL'),
         ):
             if col not in existing_cols:
                 c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
@@ -1161,6 +1161,15 @@ def _venue_health_inner():
         except Exception:
             update_rows = []
 
+    # Latest weekly leak-monitor count: unlinked same-day duplicates the scorer finds.
+    venue_to_leaks = {}
+    try:
+        c.execute("SELECT venue, leak_pairs FROM scrape_stats WHERE scrape_mode = 'leak_monitor' ORDER BY id")
+        venue_to_leaks = {venue: n for venue, n in c.fetchall()}
+    except Exception:
+        if DATABASE_URL:
+            conn.rollback()
+
     # Failed runs and LLM content splits from the last 7 days.
     venue_to_errors = {}
     try:
@@ -1208,6 +1217,7 @@ def _venue_health_inner():
         d['total_scraped_30d'] = total_scraped_30d
         d['content_changes_30d'] = content_changes_30d
         d.update(venue_to_errors.get(d['venue'], {'errors_7d': 0, 'last_error': None, 'splits_7d': 0}))
+        d['leak_pairs'] = venue_to_leaks.get(d['venue'])
 
         days_since = None
         last_scraped_label = 'Never'

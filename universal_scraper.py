@@ -181,6 +181,8 @@ VENUES = {
         # — together responsible for ~85% of this venue's possible_duplicate backlog. Nulling
         # it forces dedup onto ticket_url (Ticketmaster, confirmed unique per event — no shared
         # ticket_url across >1 start_date found).
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"event_url": "ignore"},
         "unreliable_urls": "event_url",
     },
     "smart_financial": {
@@ -250,6 +252,7 @@ VENUES = {
         # Confirmed 2026-09-23: nightly Showcase + Open Mic (or Late Showcase) at different
         # times with near-identical titles — same false-positive class as Secret Group (ce1dcdf).
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "axelrad": {
         "name": "Axelrad Beer Garden",
@@ -349,6 +352,7 @@ VENUES = {
         # Confirmed 2026-09-23: same headliner often runs an early + late set (or two different
         # headliners) on one night — same false-positive class as Secret Group (ce1dcdf).
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "shady_acres": {
         "name": "Shady Acres Saloon",
@@ -371,6 +375,7 @@ VENUES = {
         # nights with different artists — the exact false-positive class dupe_check_start_time
         # (ce1dcdf) was built for; already the canonical example in CLAUDE.md's ML notes.
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "secret_group": {
         "name": "The Secret Group",
@@ -390,6 +395,7 @@ VENUES = {
         # List 7PM/9PM) with near-identical titles — safe to treat a differing start_time as
         # proof of separate events here, unlike most venues.
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "hotel_lucine": {
         "name": "Hotel Lucine",
@@ -459,6 +465,8 @@ VENUES = {
         # (never per-event) — event_url is the real per-show link. Left non-null, the shared
         # value made detect_url_date_conflicts() flag nearly every event on this venue as a
         # date-drift duplicate of whichever row had the lowest id.
+        # Unified matching: link trust per field (key | evidence | ignore | drop).
+        "link_trust": {"ticket_url": "ignore"},
         "unreliable_urls": "ticket_url",
     },
     "docs_jazz": {
@@ -477,6 +485,7 @@ VENUES = {
         "link_ignore_patterns": [r"/r/"],
         # Many nights run a 7:00 and a 9:30 show (confirmed 2026-11-02 via JSON-LD).
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "arena_theatre": {
         "name": "Arena Theatre",
@@ -644,6 +653,7 @@ VENUES = {
         # Confirmed 2026-09-23: multiple distinct headliners/sets on the same night at
         # different times — same false-positive class as Secret Group (ce1dcdf).
         "dupe_check_start_time": True,
+        "multi_show": True,
     },
     "velveeta_room": {
         "name": "The Velveeta Room",
@@ -2000,6 +2010,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     generic_links = {u.rstrip('/') for u in (venue.get('url'), venue.get('venue_url'),
                                              f"{_site.scheme}://{_site.netloc}" if _site.netloc else None) if u}
     for event in events:
+        extracted = {f: event.get(f) for f in ('ticket_url', 'event_url')}
         event['venue_url'] = venue.get('venue_url') or venue.get('url', '')
         event['venue'] = venue['name']
         event['city'] = venue['city']
@@ -2050,6 +2061,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             if slug_date:
                 mm, dd, yy = slug_date.groups()
                 event['start_date'] = f"20{yy}-{mm}-{dd}"
+                # Arena shows are single nights; a leftover LLM end date would become a range.
+                event['end_date'] = event['start_date']
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
@@ -2095,6 +2108,14 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         for field in ('ticket_url', 'event_url'):
             if event.get(field) and event[field].rstrip('/') in generic_links:
                 event[field] = None
+        # Links as extracted, for unified matching: data corrections applied, legacy nulling not.
+        # Toyota's carousel check is a correction, so its result stands even when it nulls.
+        for field, value in extracted.items():
+            if event.get(field) is None and value and not (venue_key == 'toyota_center' and field == 'ticket_url'):
+                extracted[field] = re.sub(event['strip_end_url'], '', value) if event['strip_end_url'] else value
+            else:
+                extracted[field] = event.get(field)
+        event['extracted_links'] = extracted
 
     # A ticket_url/event_url shared by 2+ differently-named events in this same scrape is a
     # strong signal of a generic/shared page (a seasonal campaign link, a venue-wide landing
@@ -2164,6 +2185,28 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=
                     print(f"  ⚠ Could not record the failure: {log_err}")
     return all_events
 
+# Longest date range expanded into nightly rows; longer ones are kept whole and flagged.
+MAX_EXPANDED_NIGHTS = 7
+
+# Bracketed title tags the LLM no longer strips: (Sold Out), [Rescheduled], (New Date), ...
+SOLD_OUT_TAG = re.compile(r'\s*[\(\[]\s*sold\s*-?\s*out\s*[\)\]]\s*', re.I)
+DATE_CHANGED_TAG = re.compile(r'\s*[\(\[]\s*(new\s+date|date\s+changed|rescheduled|postponed)\s*[\)\]]\s*', re.I)
+
+
+def clean_title_tags(events):
+    """Strip sold-out and date-change tags from titles and set the matching flags."""
+    for event in events:
+        name = event.get('name') or ''
+        if SOLD_OUT_TAG.search(name):
+            event['sold_out'] = True
+            name = SOLD_OUT_TAG.sub(' ', name)
+        if DATE_CHANGED_TAG.search(name):
+            event['date_changed'] = True
+            name = DATE_CHANGED_TAG.sub(' ', name)
+        event['name'] = re.sub(r'\s{2,}', ' ', name).strip(' -–|')
+    return events
+
+
 def expand_multi_night_events(events):
     """Expand a date-range event into one row per night, unless the venue is
     configured to allow genuine multi-day continuous events (allows_multi_day).
@@ -2183,6 +2226,13 @@ def expand_multi_night_events(events):
                 start_d = datetime.strptime(start, '%Y-%m-%d').date()
                 end_d = datetime.strptime(str(end)[:10], '%Y-%m-%d').date()
             except ValueError:
+                expanded.append(event)
+                continue
+            # A run longer than a week is more likely a misread range than nightly shows
+            # (Cactus Cafe 2026-08-01, Arena 2026-11-03): keep one row and flag it for review.
+            if (end_d - start_d).days + 1 > MAX_EXPANDED_NIGHTS:
+                event['multi_day'] = False
+                event.setdefault('flags', []).append('long_range')
                 expanded.append(event)
                 continue
             day = start_d
@@ -2205,20 +2255,27 @@ def expand_multi_night_events(events):
 LAST_CANCEL_CHECK = {}
 
 MATCH_ROW_COLS = ('id', 'name', 'start_date', 'start_time', 'doors_time', 'location', 'ticket_url',
-                  'event_url', 'review_status', 'event_status', 'recurring', 'duplicate_of_id', 'venue')
+                  'event_url', 'review_status', 'event_status', 'recurring', 'duplicate_of_id', 'venue', 'source')
 
 
-def _load_match_rows(c, venues, since):
+def _load_match_rows(c, venues, since, keys=()):
+    """Candidate rows by venue name. Rows a venue's own scraper wrote (source = its key) are
+    also filed under its current name, so a display-name rename doesn't orphan them."""
     if not venues:
         return {}
     ph = '%s'
+    keys = [k for k in keys if k]
+    key_clause = f" OR source IN ({', '.join([ph] * len(keys))})" if keys else ''
     c.execute(f'''SELECT {', '.join(MATCH_ROW_COLS)} FROM events
-                  WHERE venue IN ({', '.join([ph] * len(venues))}) AND start_date >= {ph}''',
-              list(venues) + [since])
+                  WHERE (venue IN ({', '.join([ph] * len(venues))}){key_clause}) AND start_date >= {ph}''',
+              list(venues) + keys + [since])
     rows_by_venue = {}
     for r in c.fetchall():
         row = dict(zip(MATCH_ROW_COLS, r))
-        rows_by_venue.setdefault(row['venue'], []).append(row)
+        venue = row['venue']
+        if venue not in venues and row['source'] in VENUES:
+            venue = VENUES[row['source']]['name']
+        rows_by_venue.setdefault(venue, []).append(row)
     return rows_by_venue
 
 
@@ -2226,10 +2283,13 @@ def shadow_decide(c, events):
     """Run the unified scorer over a save batch against the pre-batch DB state. Never raises."""
     try:
         since = (datetime.now().date() - timedelta(days=em.POSTPONE_LOOKBACK_DAYS + 1)).isoformat()
-        rows_by_venue = _load_match_rows(c, {e.get('venue') for e in events if e.get('venue')}, since)
-        decisions, claimed, best_against = em.decide_batch(events, rows_by_venue, VENUES)
+        rows_by_venue = _load_match_rows(c, {e.get('venue') for e in events if e.get('venue')}, since,
+                                         {e.get('venue_key') for e in events})
+        decisions, claimed, best_against, anomalies = em.decide_batch(events, rows_by_venue, VENUES)
+        for venue, found in anomalies.items():
+            print(f"  ⚠ Shadow matching anomalies at {venue}: {', '.join(found)}")
         return {'decisions': decisions, 'claimed': claimed, 'best_against': best_against,
-                'rows_by_venue': rows_by_venue}
+                'rows_by_venue': rows_by_venue, 'anomalies': anomalies}
     except Exception as e:
         print(f"  ⚠ Shadow matching failed (legacy path unaffected): {e}")
         return None
@@ -2260,20 +2320,23 @@ def shadow_log(c, events, shadow, legacy_outcomes, mode):
                 postponement_targets.add(d['target_id'])
             c.execute('''INSERT INTO match_log (logged_at, mode, kind, venue, venue_key, event_name, start_date,
                          start_time, shadow_decision, shadow_target, shadow_score, parts, runner_up_id,
-                         runner_up_score, reason, legacy_outcome, legacy_target, legacy_new_id, agree)
-                         VALUES (%s,%s,'save',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                         runner_up_score, reason, legacy_outcome, legacy_target, legacy_new_id, agree, detail)
+                         VALUES (%s,%s,'save',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
                       (now, mode, ev.get('venue'), ev.get('venue_key'), ev.get('name'), ev.get('start_date'),
                        ev.get('start_time'), d['decision'],
                        None if d['target_id'] is None else str(d['target_id']), d['score'],
                        json.dumps(d['parts']) if d['parts'] else None,
                        None if d['runner_up_id'] is None else str(d['runner_up_id']), d['runner_up_score'],
                        d.get('reason'), lo.get('outcome'), lo.get('target_id'), lo.get('new_id'),
-                       em.agrees(d, lo)))
+                       em.agrees(d, lo),
+                       json.dumps({k: v for k, v in (('recurring', d.get('recurring')),
+                                                     ('anomalies', shadow['anomalies'].get(ev.get('venue'))))
+                                   if v}) or None))
 
         today = datetime.now().date().isoformat()
         for venue_key in {e.get('venue_key') for e in events if e.get('venue_key')}:
             legacy = LAST_CANCEL_CHECK.get(venue_key)
-            if legacy is None or legacy.get('skipped'):
+            if legacy is None or legacy.get('skipped') or VENUES.get(venue_key, {}).get('ical_url'):
                 continue
             venue = VENUES.get(venue_key, {}).get('name')
             legacy_missing = set(legacy.get('missing', []))
@@ -2299,7 +2362,8 @@ def match_report(days=7):
     c = conn.cursor()
     since = (datetime.now() - timedelta(days=days)).isoformat()
     c.execute('''SELECT shadow_decision, legacy_outcome, agree, COUNT(*) FROM match_log
-                 WHERE kind = 'save' AND logged_at >= %s GROUP BY 1,2,3 ORDER BY 4 DESC''', (since,))
+                 WHERE kind = 'save' AND logged_at >= %s AND shadow_decision != 'excluded'
+                 GROUP BY 1,2,3 ORDER BY 4 DESC''', (since,))
     rows = c.fetchall()
     total = sum(r[3] for r in rows)
     agreed = sum(r[3] for r in rows if r[2])
@@ -2326,9 +2390,10 @@ def match_report(days=7):
     conn.close()
 
 
-def leak_report():
-    """Read-only: same-venue, same-date active pairs scoring 55+ with no duplicate link
-    between them. Each one is a duplicate the save path let through."""
+def leak_report(write=False):
+    """Same-venue, same-date active pairs scoring 55+ with no duplicate link between them;
+    each is a duplicate the save path let through. City calendar venues are skipped.
+    write=True records each directly scraped venue's count in scrape_stats for venue health."""
     conn = get_db_connection()
     c = conn.cursor()
     today = datetime.now().date().isoformat()
@@ -2344,7 +2409,7 @@ def leak_report():
     per_venue = {}
     leaks = []
     for (venue, _), group in groups.items():
-        if len(group) < 2:
+        if len(group) < 2 or venue not in key_by_name or VENUES[key_by_name[venue]].get('ical_url'):
             continue
         profile = em.venue_profile(VENUES.get(key_by_name.get(venue)))
         ctx = {'profile': profile, 'batch_ignored': set(), 'pool': group}
@@ -2362,6 +2427,17 @@ def leak_report():
         print(f"  {n:4}  {venue}")
     for total, venue, a, b, parts in sorted(leaks, key=lambda x: -x[0])[:40]:
         print(f"  {total:4} [{venue}] {a['start_date']} #{a['id']} '{a['name']}' ~ #{b['id']} '{b['name']}' {parts}")
+    if write:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS leak_pairs INTEGER")
+        for key, v in VENUES.items():
+            if v.get('ical_url'):
+                continue
+            c.execute('''INSERT INTO scrape_stats (scrape_date, venue, scrape_mode, total_scraped, new_events, leak_pairs)
+                         VALUES (%s, %s, 'leak_monitor', 0, 0, %s)''', (today, v['name'], per_venue.get(v['name'], 0)))
+        conn.commit()
+        conn.close()
     return per_venue
 
 
@@ -2372,7 +2448,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
     auto_approve_map = {v['name']: v.get('auto_approve', False) for v in VENUES.values()}
     today = datetime.now().strftime('%Y-%m-%d')
 
-    events = expand_multi_night_events(events)
+    events = expand_multi_night_events(clean_title_tags(events))
 
     #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
     before = len(events)
@@ -2416,7 +2492,10 @@ def save_to_database(events, mode='daily', auto_approve=False):
         try:
             # Computed early — needed both for the URL-match date-correction gate below and
             # the new-insert status decision further down.
-            venue_auto_approve = auto_approve or auto_approve_map.get(event['venue'], False) or event.get('auto_approve', False)
+            # A long_range row needs a human unless it's a never-public row auto-approved per event.
+            venue_auto_approve = event.get('auto_approve', False) or (
+                (auto_approve or auto_approve_map.get(event['venue'], False))
+                and 'long_range' not in event.get('flags', []))
 
             # Exact duplicate check: name + start_date + venue + start_time
             c.execute(f'''SELECT id, ticket_url, event_url FROM events
@@ -3038,6 +3117,10 @@ if __name__ == "__main__":
     # cleanup on 2026-07-30.
     if args.mode == 'weekly':
         archive_past_events(buffer_days=1)
+        try:
+            leak_report(write=True)
+        except Exception as e:
+            print(f"  ⚠ Leak monitor failed: {e}")
         print(f"\n=== Weekly duplicate sweep ===")
         detect_existing_duplicates(dry_run=False)
         detect_url_date_conflicts(dry_run=False)

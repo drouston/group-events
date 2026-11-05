@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import event_matching as em
 
 SINGLE = {}                                   # default profile: one show a night
-MULTI = {'dupe_check_start_time': True}       # venue with early/late shows
+MULTI = {'multi_show': True}                 # venue with early/late shows
 KEYED = {'link_trust': {'ticket_url': 'key'}}
 
 V = 'Test Venue'
@@ -25,7 +25,7 @@ def listing(name, date, time=None, **kw):
 
 def decide(ev, rows, cfg=SINGLE, today=None):
     from datetime import date
-    decisions, _, _ = em.decide_batch([ev], {V: rows}, {'v': cfg}, today=today or date(2026, 11, 1))
+    decisions, _, _, _ = em.decide_batch([ev], {V: rows}, {'v': cfg}, today=today or date(2026, 11, 1))
     return decisions[0]
 
 
@@ -71,6 +71,14 @@ CASES = [
     ('Source key with a new date reschedules',
      listing('Jane Doe', '2026-12-09', '20:00', ticket_url='https://t/123'),
      [row(1, 'Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/123')], KEYED, 'reschedule', 1),
+    ('A link to the venue\'s own site is never evidence',
+     listing('John Roe', '2026-12-01', '20:00', event_url='https://venue.test/shows'),
+     [row(1, 'Jane Doe', '2026-12-01', '20:00', event_url='https://venue.test/shows')],
+     {'url': 'https://venue.test/shows'}, 'review', 1),
+    ('Old unreliable_urls flag no longer affects matching',
+     listing('Jane Doe', '2026-12-01', '20:00', event_url='https://t/e1'),
+     [row(1, 'Jane Doe', '2026-12-01', '20:00', event_url='https://t/e1')],
+     {'unreliable_urls': 'event_url'}, 'update', 1),
     ('Shared opener phrase does not match different headliners',
      listing('Deer Tick with special guest Presley Haile', '2026-12-01', '20:00'),
      [row(1, 'Cowboy Mouth with special guest Lvvrs', '2026-12-01', '20:00')], SINGLE, 'review', 1),
@@ -103,20 +111,47 @@ def test_golden_cases():
 def test_batch_duplicate_within_one_scrape():
     from datetime import date
     evs = [listing('Jane Doe', '2026-12-01', '20:00'), listing('Jane Doe', '2026-12-01', '20:00')]
-    decisions, _, _ = em.decide_batch(evs, {V: []}, {'v': SINGLE}, today=date(2026, 11, 1))
+    decisions, _, _, _ = em.decide_batch(evs, {V: []}, {'v': SINGLE}, today=date(2026, 11, 1))
     assert [d['decision'] for d in decisions] == ['insert', 'batch_duplicate'], decisions
 
 
 def test_two_shows_cannot_land_on_one_row():
     from datetime import date
     evs = [listing('Jane Doe', '2026-12-01', '19:00'), listing('Jane Doe', '2026-12-01', '21:30')]
-    decisions, _, _ = em.decide_batch(evs, {V: [row(1, 'Jane Doe', '2026-12-01', '19:00')]}, {'v': MULTI},
+    decisions, _, _, _ = em.decide_batch(evs, {V: [row(1, 'Jane Doe', '2026-12-01', '19:00')]}, {'v': MULTI},
                                       today=date(2026, 11, 1))
     assert decisions[0]['decision'] == 'update' and decisions[1]['decision'] == 'insert', decisions
 
 
+def test_best_score_wins_regardless_of_page_order():
+    from datetime import date
+    # The weaker match comes first on the page; the row still goes to the stronger one.
+    evs = [listing('Jane Doe Trio', '2026-12-01', '21:00'), listing('Jane Doe', '2026-12-01', '20:00')]
+    decisions, _, _, _ = em.decide_batch(evs, {V: [row(1, 'Jane Doe', '2026-12-01', '20:00')]}, {'v': SINGLE},
+                                         today=date(2026, 11, 1))
+    assert decisions[1]['decision'] == 'update' and decisions[1]['target_id'] == 1, decisions
+    assert decisions[0]['decision'] != 'update', decisions
+
+
+def test_city_calendar_feeds_are_excluded():
+    from datetime import date
+    decisions, _, _, _ = em.decide_batch([listing('Jane Doe', '2026-12-01')], {V: []},
+                                         {'v': {'ical_url': 'https://example.test/feed.ics'}}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'excluded', decisions
+
+
+def test_recurring_series_inherited_at_insert():
+    from datetime import date
+    rows = [row(1, 'Sunday Showcase', '2026-12-06', '20:00', recurring='yes')]
+    decisions, _, _, _ = em.decide_batch([listing('Sunday Showcase', '2026-12-13', '20:00')], {V: rows},
+                                         {'v': SINGLE}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'insert' and decisions[0]['recurring'] == 'yes', decisions
+
+
 if __name__ == '__main__':
-    for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row):
+    for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
+              test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
+              test_recurring_series_inherited_at_insert):
         try:
             t()
             print('PASS', t.__name__)

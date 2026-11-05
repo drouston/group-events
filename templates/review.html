@@ -848,6 +848,7 @@
         // template: adding a new flag elsewhere in the pipeline (see CLAUDE.md's dupe-
         // hierarchy to-do) means adding one entry here, not touching the render logic.
         const FLAG_META = {
+            long_range: { icon: '📆', title: 'Date range longer than 7 nights. Kept as one row instead of expanding into nightly rows. Check whether the range is real.' },
             split_boundary: { icon: '✂️', title: 'Extracted right at an LLM response split boundary — the real event text may have been cut across two separate extraction calls. Verify name/date/time before trusting this row.' }
         };
 
