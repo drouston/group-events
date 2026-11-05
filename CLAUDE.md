@@ -140,7 +140,7 @@ moth                # MOTH Presents
 numbers             # Numbers (Montrose nightclub)
 miller_outdoor      # Miller Outdoor Theatre (own site — previously only a byproduct of the city ICS feed)
 docs_jazz           # Doc's Jazz Club
-arena_theatre       # Arena Theatre (event names/dates parsed from URL slugs — no visible listing text on site)
+arena_theatre       # Arena Theatre (no visible listing text; the LLM reads dates from URL slugs, which it misreads — see to-do)
 dosey_doe           # Dosey Doe - The Big Barn (The Woodlands)
 
 # Austin
@@ -215,6 +215,7 @@ GET  /debug               # Debug info
 - [ ] Remaining `possible_duplicate` backlog (~150 rows after the 2026-11-02 Doc's/Arena cleanup) — triage with the scorer once it's live rather than by hand.
 - [ ] Doc's Jazz Club runs 7:00 and 9:30 shows on many nights; extraction only captures one per night.
 - [ ] **Review scraping for optimization** (added 2026-11-02). A full Houston onboard dry run (34 venues, 1,326 events) took ~67 min, about twice the estimate. Slowest: Riot Comedy 645s (page is 114k chars, over the 100k input cap, so later events are cut off before extraction; split twice), House of Blues 367s and Toyota Center 352s, Secret Group 500s, Dosey Doe ~480s (one LLM split each), Smart Financial 169s (multiple category pages). Candidates: HTML trimming before the LLM for heavy pages, dropping low-value output fields (description, per-field confidence) to stay under the output cap, and per-venue run timing in `scrape_stats`. Also found: Last Concert's `/calendar/` URL now 404s (0 events).
+- [ ] **Arena Theatre dates** (2026-11-05): the slug-date correction was removed to keep unified matching on a clean slate. The LLM reads dates from bare `/event/MMDDYY-` links and misreads some (2026-11-03: one link at temperature 0 consistently, a cascade under the old long prompt). Unified matching routes a misread date to review as a possible postponement; the legacy path inserts it as a new pending row. Revisit after scoring, prompt and normalization are refined; the venue's events API (`/wp-json/wp/v2/mec-events`, titles carry MM/DD/YY) needs Arena's okay first.
 - [ ] **Replace the 7-night long-range guard with something smarter** (added 2026-11-05). `expand_multi_night_events` keeps any range over `MAX_EXPANDED_NIGHTS` (7) as one row flagged `long_range` and holds it for review. That stops misread ranges (Arena 481 rows on 2026-11-03, Cactus Cafe 27 rows on 2026-08-01), but a legitimate long run (a Broadway tour stop, a Vegas-style residency with hundreds of nightly shows) would land as one review item instead of its real nights. Needs a way to tell a misread range from a real run, e.g. corroborating per-night listings on the page, a per-venue allowance, or the recurring-series machinery.
 - [x] Weekly leak monitor: per-venue counts written to `scrape_stats` (`scrape_mode='leak_monitor'`, `leak_pairs`) each weekly run and shown as "Leaks" on venue health (2026-11-05).
 

@@ -2050,19 +2050,6 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
                 (href for title, href in toyota_tickets.items() if title in event_name_lower),
                 None
             )
-        # Arena Theatre's page has no visible text for any event at all — not even a label,
-        # just bare links — so the LLM has to read the date from digits buried in the URL
-        # slug (/event/MMDDYY-ticket-.../). Confirmed 2026-10-22: it decodes the first link's
-        # date correctly, then drifts into a hallucinated ~weekly-incrementing sequence for
-        # every one after that, completely disconnected from each link's own slug. The slug
-        # format is fixed, so correct it deterministically instead of trusting that readout.
-        if venue_key == 'arena_theatre' and event.get('event_url'):
-            slug_date = re.search(r'/event/(\d{2})(\d{2})(\d{2})-', event['event_url'])
-            if slug_date:
-                mm, dd, yy = slug_date.groups()
-                event['start_date'] = f"20{yy}-{mm}-{dd}"
-                # Arena shows are single nights; a leftover LLM end date would become a range.
-                event['end_date'] = event['start_date']
         # Controls for save_to_database's URL-identity matching. Defaults preserve today's
         # behavior everywhere except event_url's date requirement (see dupe_use_start_date
         # below) — only flip a venue's dupe_use_start_date to False after confirming its
