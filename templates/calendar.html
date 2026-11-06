@@ -114,6 +114,18 @@
             padding: 8px 0;
         }
 
+        .highlight-list {
+            max-height: 420px;
+            overflow-y: auto;
+        }
+
+        .highlight-more {
+            font-size: 11px;
+            color: #888;
+            padding-top: 8px;
+            border-top: 1px solid #f0f0f0;
+        }
+
         /* ---------- Type summary cards ---------- */
         .types-section { margin-bottom: 24px; }
 
@@ -345,11 +357,13 @@
             <div class="highlights-grid">
                 <div class="highlight-card">
                     <div class="highlight-card-title">{{ week_label }}</div>
-                    <div id="this-week-list"></div>
+                    <div id="this-week-list" class="highlight-list"></div>
+                    {% if this_week_total > this_week|length %}<div class="highlight-more">Showing {{ this_week|length }} of {{ this_week_total }}. See the full calendar below.</div>{% endif %}
                 </div>
                 <div class="highlight-card">
                     <div class="highlight-card-title">This Weekend (Thu–Sun)</div>
-                    <div id="this-weekend-list"></div>
+                    <div id="this-weekend-list" class="highlight-list"></div>
+                    {% if this_weekend_total > this_weekend|length %}<div class="highlight-more">Showing {{ this_weekend|length }} of {{ this_weekend_total }}. See the full calendar below.</div>{% endif %}
                 </div>
             </div>
         </div>

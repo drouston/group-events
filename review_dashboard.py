@@ -659,7 +659,7 @@ def calendar():
     this_week = [
         e for e in events
         if week_start <= e['start_date'] <= week_end
-    ][:20]
+    ]
 
     # --- This weekend: Thu-Sun, all non-private event types ---
     days_since_thursday = (weekday - 3) % 7
@@ -678,6 +678,11 @@ def calendar():
         if e['event_type'] in weekend_types and weekend_start <= e['start_date'] <= weekend_end
     ]
 
+    # Highlight cards show at most this many; the totals let the card say what was left out.
+    HIGHLIGHT_CAP = 25
+    this_week_total, this_weekend_total = len(this_week), len(this_weekend)
+    this_week, this_weekend = this_week[:HIGHLIGHT_CAP], this_weekend[:HIGHLIGHT_CAP]
+
     city_name = get_city_branding()['name']
 
     return render_template(
@@ -689,6 +694,8 @@ def calendar():
         week_label=week_label,
         this_week=this_week,
         this_weekend=this_weekend,
+        this_week_total=this_week_total,
+        this_weekend_total=this_weekend_total,
         city_name=city_name,
         og_image_url=url_for('event_card.homepage_card_image', _external=True),
         og_url=url_for('calendar', _external=True),
