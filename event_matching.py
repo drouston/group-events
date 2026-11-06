@@ -195,7 +195,7 @@ def score(listing, cand, ctx):
 
 def in_block(listing, cand):
     a, b = _date(listing.get('start_date')), _date(cand.get('start_date'))
-    if a is None or b is None or cand.get('review_status') == 'rejected':
+    if a is None or b is None:
         return False
     gap = abs((a - b).days)
     if gap == 0:
@@ -252,6 +252,10 @@ def _anomalies(events, rows):
     return found
 
 
+def _rejected(row):
+    return row.get('review_status') == 'rejected'
+
+
 def _decide_venue(idxs, events, rows, profile, today):
     """Decisions for one venue's slice of a batch. Rows are assigned to events by score,
     highest first, so page order never decides which event gets a row."""
@@ -268,12 +272,15 @@ def _decide_venue(idxs, events, rows, profile, today):
         keys = usable_links(ev, profile, levels=('key',), batch_ignored=batch_ignored)
         if not keys:
             continue
-        hit = next((r for r in rows if r.get('review_status') != 'rejected'
-                    and keys & usable_links(r, profile, levels=('key',))), None)
+        hits = [r for r in rows if keys & usable_links(r, profile, levels=('key',))]
+        hit = next((r for r in hits if r.get('review_status') != 'rejected'), hits[0] if hits else None)
         if not hit:
             continue
         best_against[hit['id']] = 999
-        if hit['id'] in claimed:
+        if hit.get('review_status') == 'rejected':
+            # Only a rejected copy exists: keep the rejection rather than resurfacing the show.
+            out[i].update(decision='skip_rejected', target_id=hit['id'], reason='source_key')
+        elif hit['id'] in claimed:
             out[i].update(decision='batch_duplicate', target_id=hit['id'], reason='source_key')
         elif hit.get('start_date') == ev.get('start_date'):
             claimed[hit['id']] = i
@@ -288,7 +295,7 @@ def _decide_venue(idxs, events, rows, profile, today):
         if out[i]['reason'] != 'source_key':
             continue
         block = [r for r in rows if in_block(ev, r)]
-        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': block}
+        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': [r for r in block if not _rejected(r)]}
         for r in block:
             best_against[r['id']] = max(best_against.get(r['id'], -999), score(ev, r, ctx)[0])
 
@@ -300,30 +307,38 @@ def _decide_venue(idxs, events, rows, profile, today):
         if out[i]['decision']:
             continue
         block = [r for r in open_rows if in_block(ev, r)]
-        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': block}
+        # Rejected rows are candidates (so a rejection is remembered) but never count as
+        # other events at the venue for the sole-event bonus or the sibling cap.
+        ctx = {'profile': profile, 'batch_ignored': batch_ignored, 'pool': [r for r in block if not _rejected(r)]}
         scored = []
         for r in block:
             total, parts = score(ev, r, ctx)
             scored.append((total, parts, r))
             best_against[r['id']] = max(best_against.get(r['id'], -999), total)
-            pairs.append((total, i, r['id']))
+            pairs.append((total, i, r['id'], _rejected(r)))
         by_event[i] = sorted(scored, key=lambda x: -x[0])
 
-    # 3. Assign rows highest score first; each event and each row at most once.
+    # 3. Assign rows highest score first; each event and each row at most once. Live rows
+    #    are assigned before rejected ones, so a live copy always wins when both exist.
     assigned = {}
-    for total, i, rid in sorted(pairs, key=lambda x: (-x[0], x[1])):
+    for total, i, rid, rej in sorted(pairs, key=lambda x: (x[3], -x[0], x[1])):
         if total < REVIEW_AT or i in assigned or rid in claimed:
             continue
         assigned[i] = rid
         claimed[rid] = i
     for i, rid in assigned.items():
-        total, parts, _ = next(x for x in by_event[i] if x[2]['id'] == rid)
-        others = [x for x in by_event[i] if x[2]['id'] != rid]
+        total, parts, target = next(x for x in by_event[i] if x[2]['id'] == rid)
+        others = [x for x in by_event[i] if x[2]['id'] != rid and not _rejected(x[2])]
         d = out[i]
         d.update(score=total, parts=parts, target_id=rid)
         if others:
             d.update(runner_up_id=others[0][2]['id'], runner_up_score=others[0][0])
-        if others and others[0][0] >= REVIEW_AT and total - others[0][0] < TIE_MARGIN:
+        if _rejected(target):
+            if total >= UPDATE_AT:
+                d.update(decision='skip_rejected')
+            else:
+                d.update(decision='review', reason='rejected_match')
+        elif others and others[0][0] >= REVIEW_AT and total - others[0][0] < TIE_MARGIN:
             d.update(decision='review', reason='tie')
         else:
             d['decision'] = 'update' if total >= UPDATE_AT else 'review'
@@ -450,6 +465,8 @@ def agrees(shadow, legacy):
         return lo in ('exact_skip', 'url_update', 'near_update') and lt == st
     if sd == 'excluded':
         return None
+    if sd == 'skip_rejected':
+        return lo in ('exact_skip', 'url_update', 'near_update') and lt == st
     if sd == 'reschedule':
         return lo == 'url_update' and lt == st
     if sd == 'review':

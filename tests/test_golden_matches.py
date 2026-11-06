@@ -159,10 +159,28 @@ def test_key_match_does_not_leave_stored_copies_missing():
     assert em.missing_rows(rows, claimed, best, set()) == [], (claimed, best)
 
 
+def test_rejected_only_show_stays_rejected():
+    from datetime import date
+    rows = [row(1, 'Private Party', '2026-12-01', '20:00', review_status='rejected')]
+    decisions, _, _, _ = em.decide_batch([listing('Private Party', '2026-12-01', '20:00')], {V: rows},
+                                         {'v': SINGLE}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'skip_rejected' and decisions[0]['target_id'] == 1, decisions
+
+
+def test_live_copy_wins_over_rejected_copy():
+    from datetime import date
+    rows = [row(1, 'Jane Doe', '2026-12-01', '20:00', review_status='rejected'),
+            row(2, 'Jane Doe', '2026-12-01', '20:00')]
+    decisions, _, _, _ = em.decide_batch([listing('Jane Doe', '2026-12-01', '20:00')], {V: rows},
+                                         {'v': SINGLE}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'update' and decisions[0]['target_id'] == 2, decisions
+
+
 if __name__ == '__main__':
     for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
               test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
-              test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing):
+              test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing,
+              test_rejected_only_show_stays_rejected, test_live_copy_wins_over_rejected_copy):
         try:
             t()
             print('PASS', t.__name__)
