@@ -142,6 +142,7 @@ miller_outdoor      # Miller Outdoor Theatre (own site — previously only a byp
 docs_jazz           # Doc's Jazz Club
 arena_theatre       # Arena Theatre (no visible listing text; the LLM reads dates from URL slugs, which it misreads — see to-do)
 dosey_doe           # Dosey Doe - The Big Barn (The Woodlands)
+den_comedy          # The Den Comedy Club (inside Wolfsmiths; Squarespace ticket store)
 
 # Austin
 emos_austin           # Emo's Austin

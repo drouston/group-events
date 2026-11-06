@@ -504,6 +504,15 @@ VENUES = {
         "wait_time": 5,
         "scroll_count": 3,
     },
+    "den_comedy": {
+        "name": "The Den Comedy Club",
+        # Inside Wolfsmiths; tickets are sold as Squarespace store items, one per show.
+        "url": "https://www.thedencomedyclub.com/tickets",
+        "venue_url": "https://www.thedencomedyclub.com/",
+        "city": "Houston",
+        "state": "TX",
+        "wait_time": 5,
+    },
     # --- Austin venues (onboarding in progress) ---
     "antones_austin": {
         "name": "Antone's Nightclub",
@@ -1355,7 +1364,9 @@ def scrape_google_ics(venue_config, mode='daily'):
         description = str(component.get('DESCRIPTION', '')) or None
 
         location = str(component.get('LOCATION', '')).strip()
-        venue = location.split(',')[0].strip() if location else venue_name
+        single_venue = venue_config.get('ics_single_venue')
+        # A single-venue feed's LOCATION is just its own address, not a different venue.
+        venue = venue_name if single_venue or not location else location.split(',')[0].strip()
 
         # Skip events from venues we already scrape directly — ICS data is lower quality
         # and would create duplicates. Compare against all non-ICS venue names and known aliases
@@ -1374,7 +1385,7 @@ def scrape_google_ics(venue_config, mode='daily'):
         location_lower = location.lower()
         scraped_names = []
         for v in VENUES.values():
-            if v.get('ical_url'):
+            if em.is_multi_venue_feed(v) or v is venue_config:
                 continue
             scraped_names.append(v['name'].lower())
             scraped_names.extend(a.lower() for a in v.get('aliases', []))
@@ -2323,7 +2334,7 @@ def shadow_log(c, events, shadow, legacy_outcomes, mode):
         today = datetime.now().date().isoformat()
         for venue_key in {e.get('venue_key') for e in events if e.get('venue_key')}:
             legacy = LAST_CANCEL_CHECK.get(venue_key)
-            if legacy is None or legacy.get('skipped') or VENUES.get(venue_key, {}).get('ical_url'):
+            if legacy is None or legacy.get('skipped') or em.is_multi_venue_feed(VENUES.get(venue_key)):
                 continue
             venue = VENUES.get(venue_key, {}).get('name')
             legacy_missing = set(legacy.get('missing', []))
@@ -2423,7 +2434,7 @@ def leak_report(write=False):
     per_venue = {}
     leaks = []
     for (venue, _), group in groups.items():
-        if len(group) < 2 or venue not in key_by_name or VENUES[key_by_name[venue]].get('ical_url'):
+        if len(group) < 2 or venue not in key_by_name or em.is_multi_venue_feed(VENUES[key_by_name[venue]]):
             continue
         profile = em.venue_profile(VENUES.get(key_by_name.get(venue)))
         ctx = {'profile': profile, 'batch_ignored': set(), 'pool': group}
@@ -2446,7 +2457,7 @@ def leak_report(write=False):
         c = conn.cursor()
         c.execute("ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS leak_pairs INTEGER")
         for key, v in VENUES.items():
-            if v.get('ical_url'):
+            if em.is_multi_venue_feed(v):
                 continue
             c.execute('''INSERT INTO scrape_stats (scrape_date, venue, scrape_mode, total_scraped, new_events, leak_pairs)
                          VALUES (%s, %s, 'leak_monitor', 0, 0, %s)''', (today, v['name'], per_venue.get(v['name'], 0)))

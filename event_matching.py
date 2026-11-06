@@ -24,6 +24,12 @@ PLACEHOLDER = re.compile(r'^(tba|tbd|to be announced|special event|private event
 
 # ---------- venue identity profile ----------
 
+def is_multi_venue_feed(venue_config):
+    """True for city-calendar style ICS feeds whose events belong to many venues."""
+    cfg = venue_config or {}
+    return bool(cfg.get('ical_url')) and not cfg.get('ics_single_venue')
+
+
 def venue_profile(venue_config):
     """Per-venue identity rules, read only from the unified-matching settings:
     link_trust (key | evidence | ignore | drop per link field, default evidence),
@@ -38,7 +44,7 @@ def venue_profile(venue_config):
         'ignore_patterns': [re.compile(p) for p in cfg.get('link_ignore_patterns', [])],
         'generic_links': generic,
         'multi_show': bool(cfg.get('multi_show')),
-        'excluded': bool(cfg.get('ical_url')),
+        'excluded': is_multi_venue_feed(cfg),
     }
 
 

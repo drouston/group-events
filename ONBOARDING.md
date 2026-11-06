@@ -28,7 +28,8 @@ Popular venue platforms recur. Recognize them so you're not solving the same pro
 | SpaceCraft (Wix-based comedy/music club sites) | Page footer says "Created with SpaceCraft" / `gospacecraft.com` | Often paginates via scroll-triggered `IntersectionObserver`, not a clickable "load more" — see §4 below |
 | Timely | Shared multi-venue calendar | Use `timely_calendar_id`, bypasses Selenium+LLM entirely (see `scrape_timely_api`) |
 | SeeTickets | — | Use `"seetickets": True`, custom parser (`parse_seetickets_html`), no LLM |
-| Google/Outlook ICS feed | `.ics` link on the page | Use `ical_url` + `"scraper": "google_ics"` — but this path assumes a **multi-venue** calendar with per-event `LOCATION` filtering; a single-venue ICS feed doesn't need that machinery and is usually better scraped as a normal HTML page instead |
+| Google/Outlook ICS feed | `.ics` link on the page | Use `ical_url` + `"scraper": "google_ics"` — but this path assumes a **multi-venue** calendar with per-event `LOCATION` filtering; a single-venue ICS feed doesn't need that machinery and is usually better scraped as a normal HTML page instead. When the page is *only* an embedded Google Calendar (an iframe Selenium can't read into), use the feed with `ics_single_venue: True`: every event takes the config name, and the venue counts as a normally scraped venue everywhere else. The calendar ID is the base64 `src=` value in the embed URL. Set `days_out` too: weekly repeats otherwise run a full year out |
+| Squarespace store | `/tickets` or `/shop` page with one store item per show, `?format=json` returns the items | Standard `url` + LLM extraction works when the date/time is in each item title (The Den Comedy Club) |
 
 ## 3. Write the minimal VENUES entry
 
