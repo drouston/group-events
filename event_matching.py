@@ -310,8 +310,9 @@ def _decide_venue(idxs, events, rows, profile, today):
         for r in block:
             best_against[r['id']] = max(best_against.get(r['id'], -999), score(ev, r, ctx)[0])
 
-    # 2. Score every remaining event against its candidate rows.
-    open_rows = [r for r in rows if r['id'] not in claimed]
+    # 2. Score every remaining event against its candidate rows. Rows already claimed by a
+    #    source-key match stay candidates so a second copy of that listing is recognized.
+    open_rows = rows
     pairs = []
     by_event = {}
     for i, ev in evs.items():
@@ -331,12 +332,25 @@ def _decide_venue(idxs, events, rows, profile, today):
 
     # 3. Assign rows highest score first; each event and each row at most once. Live rows
     #    are assigned before rejected ones, so a live copy always wins when both exist.
-    assigned = {}
+    #    A listing whose best row (75+) was already taken by a higher-scoring listing is a
+    #    second copy of it: skipped, never passed down to its next-best row.
+    assigned, copies, seen = {}, {}, set()
     for total, i, rid, rej in sorted(pairs, key=lambda x: (x[3], -x[0], x[1])):
-        if total < REVIEW_AT or i in assigned or rid in claimed:
+        if i in assigned or i in copies:
+            continue
+        best_pair = i not in seen
+        seen.add(i)
+        if rid in claimed:
+            if best_pair and total >= UPDATE_AT:
+                copies[i] = (rid, total)
+            continue
+        if total < REVIEW_AT:
             continue
         assigned[i] = rid
         claimed[rid] = i
+    for i, (rid, total) in copies.items():
+        parts = next(x[1] for x in by_event[i] if x[2]['id'] == rid)
+        out[i].update(decision='batch_duplicate', target_id=rid, score=total, parts=parts, reason='copy')
     for i, rid in assigned.items():
         total, parts, target = next(x for x in by_event[i] if x[2]['id'] == rid)
         others = [x for x in by_event[i] if x[2]['id'] != rid and not _rejected(x[2])]
@@ -344,7 +358,7 @@ def _decide_venue(idxs, events, rows, profile, today):
         d.update(score=total, parts=parts, target_id=rid)
         if others:
             d.update(runner_up_id=others[0][2]['id'], runner_up_score=others[0][0])
-        tied = [x[2] for x in others if x[0] >= REVIEW_AT and total - x[0] < TIE_MARGIN]
+        tied = [x[2] for x in others if x[0] >= REVIEW_AT and abs(total - x[0]) < TIE_MARGIN]
         open_item = next((r for r in [target] + tied if _open_review_item(r)), None)
         if _rejected(target):
             if total >= UPDATE_AT:

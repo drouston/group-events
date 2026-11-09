@@ -186,12 +186,36 @@ def test_tie_updates_the_open_review_item():
         and decisions[0]['reason'] == 'open_review_item', decisions
 
 
+def test_second_copy_is_skipped_not_passed_down():
+    from datetime import date
+    # Riot, 2026-11-08: Tara listed twice; the showcase in the same slot must not catch copy 2.
+    rows = [row(1, 'Comedian Tara Cannistraci Houston', '2026-12-08', '20:00'),
+            row(2, 'Sunday Night Standup Comedy Showcase', '2026-12-08', '20:00', review_status='pending')]
+    evs = [listing('Comedian Tara Cannistraci Houston', '2026-12-08', '20:00'),
+           listing('Comedian Tara Cannistraci Houston', '2026-12-08', '20:00')]
+    decisions, _, _, _ = em.decide_batch(evs, {V: rows}, {'v': MULTI}, today=date(2026, 11, 1))
+    assert sorted(d['decision'] for d in decisions) == ['batch_duplicate', 'update'], decisions
+    assert all(d['target_id'] == 1 for d in decisions), decisions
+
+
+def test_early_show_is_not_mistaken_for_a_copy():
+    from datetime import date
+    # Punch Line: only the late show is stored and its listing matches by source key.
+    keyed = {'link_trust': {'ticket_url': 'key'}, 'multi_show': True}
+    rows = [row(1, 'Christopher Titus', '2026-12-13', '21:15', ticket_url='https://t/late')]
+    evs = [listing('Christopher Titus', '2026-12-13', '19:00', ticket_url='https://t/early'),
+           listing('Christopher Titus', '2026-12-13', '21:15', ticket_url='https://t/late')]
+    decisions, _, _, _ = em.decide_batch(evs, {V: rows}, {'v': keyed}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'insert' and decisions[1]['decision'] == 'update', decisions
+
+
 if __name__ == '__main__':
     for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
               test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
               test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing,
               test_rejected_only_show_stays_rejected, test_live_copy_wins_over_rejected_copy,
-              test_tie_updates_the_open_review_item):
+              test_tie_updates_the_open_review_item, test_second_copy_is_skipped_not_passed_down,
+              test_early_show_is_not_mistaken_for_a_copy):
         try:
             t()
             print('PASS', t.__name__)
