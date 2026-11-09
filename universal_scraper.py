@@ -2285,7 +2285,7 @@ def _load_match_rows(c, venues, since, keys=()):
 def shadow_decide(c, events):
     """Run the unified scorer over a save batch against the pre-batch DB state. Never raises."""
     try:
-        since = (datetime.now().date() - timedelta(days=em.POSTPONE_LOOKBACK_DAYS + 1)).isoformat()
+        since = (datetime.now().date() - timedelta(days=em.HISTORY_DAYS + 1)).isoformat()
         rows_by_venue = _load_match_rows(c, {e.get('venue') for e in events if e.get('venue')}, since,
                                          {e.get('venue_key') for e in events})
         decisions, claimed, best_against, anomalies = em.decide_batch(events, rows_by_venue, VENUES)

@@ -15,7 +15,8 @@ REVIEW_AT = 55
 SIBLING_CAP = 74
 TIE_MARGIN = 10
 POSTPONE_TITLE_SIM = 85
-POSTPONE_LOOKBACK_DAYS = 7
+# Days of past rows loaded as candidates (±1-day matches, recurrence history).
+HISTORY_DAYS = 7
 
 LINK_FIELDS = ('ticket_url', 'event_url')
 MATCHING_LEVELS = ('key', 'evidence')
@@ -401,7 +402,6 @@ def _decide_venue(idxs, events, rows, profile, today):
             primaries.append(i)
 
     # 5. Postponement routing, once the whole batch is matched.
-    lookback = today - timedelta(days=POSTPONE_LOOKBACK_DAYS)
     for i in idxs:
         d = out[i]
         if d['decision'] is not None:
@@ -411,7 +411,9 @@ def _decide_venue(idxs, events, rows, profile, today):
         candidates = []
         for r in rows:
             rd = _date(r.get('start_date'))
-            if rd is None or evd is None or abs((rd - evd).days) <= 1 or rd < lookback:
+            # Only a show still ahead (or today) can have been postponed; a past date dropping
+            # off the page is expected (2026-11-09).
+            if rd is None or evd is None or abs((rd - evd).days) <= 1 or rd < today:
                 continue
             if r.get('review_status') == 'rejected' or r.get('event_status') == 'canceled':
                 continue
