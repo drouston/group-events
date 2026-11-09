@@ -752,6 +752,50 @@ def do_approve_event(event_data):
     conn.commit()
     conn.close()
 
+# Fields a review row can carry onto an existing event when the reviewer chooses Update.
+UPDATE_FIELDS = ('name', 'start_date', 'end_date', 'doors_time', 'start_time', 'end_time', 'price',
+                 'ticket_url', 'event_url', 'description', 'genre', 'location', 'openers',
+                 'sold_out', 'event_type', 'visible')
+
+
+def do_update_from_review(source_id, target_id):
+    """Reviewer chose Update: copy the review row's non-empty details onto the linked event,
+    then reject the review row and link it to that event. The target keeps its review status;
+    a canceled target comes back as scheduled."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    ph = '%s' if DATABASE_URL else '?'
+    cols = ', '.join(UPDATE_FIELDS)
+    c.execute(f'SELECT {cols} FROM events WHERE id = {ph}', (source_id,))
+    src = c.fetchone()
+    c.execute(f'SELECT id, event_status FROM events WHERE id = {ph}', (target_id,))
+    tgt = c.fetchone()
+    if not src or not tgt or int(source_id) == int(target_id):
+        conn.close()
+        raise ValueError('Both a review row and a different existing event are required')
+    changes = {f: v for f, v in zip(UPDATE_FIELDS, src) if v not in (None, '')}
+    if tgt[1] == 'canceled':
+        changes['event_status'] = 'scheduled'
+    if changes:
+        c.execute(f"UPDATE events SET {', '.join(f'{k} = {ph}' for k in changes)} WHERE id = {ph}",
+                  list(changes.values()) + [target_id])
+    c.execute(f"UPDATE events SET review_status = 'rejected', status = 'rejected', duplicate_of_id = {ph} WHERE id = {ph}",
+              (target_id, source_id))
+    conn.commit()
+    conn.close()
+    return sorted(changes)
+
+
+@app.route('/update_from_review', methods=['POST'])
+def update_from_review():
+    data = request.json
+    try:
+        updated = do_update_from_review(data['id'], data['target_id'])
+        return jsonify({'status': 'success', 'updated_fields': updated})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+
 @app.route('/approve', methods=['POST'])
 def approve_event():
     event_data = request.json

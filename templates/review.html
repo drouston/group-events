@@ -403,6 +403,23 @@
             overflow: visible;
         }
 
+.update-existing {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .update-existing .update-target {
+            width: 110px;
+        }
+
+        .update-existing .update-hint {
+            color: #666;
+            font-size: 12px;
+        }
+
         .duplicate-warning {
             background: #ffebee;
             border-left: 4px solid #f44336;
@@ -1216,7 +1233,8 @@
             const canApprove = needsReview || event.status === 'canceled';
             const pillActions = needsReview
                 ? `<span class="pill-actions">
-                        <button class="approve" data-action="approve" title="Approve">✓</button>
+                        <button class="approve" data-action="approve" title="Approve New: publish as its own event">✓</button>
+                        ${event.duplicate_of_id ? `<button class="edit" data-action="update" title="Update #${event.duplicate_of_id} with this row's details, then reject this row">↻</button>` : ''}
                         <button class="reject" data-action="reject" title="Reject">✗</button>
                    </span>`
                 : '';
@@ -1246,7 +1264,7 @@
                     <td>${urlCell}</td>
                     <td class="no-clip">
                         <div class="row-actions">
-                            ${canApprove ? `<button class="approve" data-action="approve">✓</button>` : ''}
+                            ${canApprove ? `<button class="approve" data-action="approve" title="Approve New">✓</button>` : ''}
                             <button class="edit" data-action="edit">✎</button>
                             <button class="reject" data-action="reject">✗</button>
                         </div>
@@ -1256,6 +1274,13 @@
             const detailRow = `
                 <tr class="detail-row" data-index="${idx}">
                     <td colspan="${COLUMNS.length}">
+                        ${needsReview ? `
+                        <div class="update-existing">
+                            <label>Update existing event #</label>
+                            <input type="number" class="update-target" value="${event.duplicate_of_id || ''}" placeholder="event ID">
+                            <button class="btn-secondary" data-action="update" data-idx="${idx}">↻ Update</button>
+                            <span class="update-hint">Copies this row's details onto that event, then rejects this row.</span>
+                        </div>` : ''}
                         ${event.status === 'possible_duplicate' ? `
                         <div class="duplicate-warning">
                             <div class="duplicate-warning-title">⚠️ Possible Duplicate</div>
@@ -1583,7 +1608,7 @@
             const action = button.dataset.action;
 
             let row = button.closest('.event-row');
-            if (!row && action === 'save') {
+            if (!row && (action === 'save' || action === 'update')) {
                 const idx = button.dataset.idx;
                 row = document.querySelector(`.event-row[data-index="${idx}"]`);
             }
@@ -1597,6 +1622,8 @@
                 toggleEditMode(row);
             } else if (action === 'save') {
                 saveEdit(row);
+            } else if (action === 'update') {
+                updateExistingEvent(row);
             }
         });
 
@@ -1667,6 +1694,37 @@
                 row.style.background = '#e8f5e9';
                 setTimeout(() => removeRow(row), 500);
                 setTimeout(() => keyProcessing = false, 1000);
+            });
+        }
+
+        // Reviewer decided this row is an existing event: carry its details onto that event.
+        function updateExistingEvent(row) {
+            const detail = getDetailRow(row);
+            const input = detail ? detail.querySelector('.update-target') : null;
+            const targetId = input && input.value ? input.value : null;
+            if (!targetId) {
+                if (detail) detail.classList.add('open');
+                if (input) input.focus();
+                return;
+            }
+            keyProcessing = true;
+            fetch('/update_from_review', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id: row.dataset.id, target_id: targetId})
+            })
+            .then(response => response.json().then(data => ({ok: response.ok, data})))
+            .then(({ok, data}) => {
+                if (!ok) throw new Error(data.message || 'Update failed');
+                row.style.background = '#e3f2fd';
+                setTimeout(() => removeRow(row), 500);
+                setTimeout(() => keyProcessing = false, 1000);
+            })
+            .catch(err => {
+                keyProcessing = false;
+                row.style.background = '#ffebee';
+                setTimeout(() => { row.style.background = ''; }, 2000);
+                alert('Update failed: ' + err.message);
             });
         }
 
