@@ -1662,11 +1662,16 @@ def parse_white_oak_html(html):
 
             date = f"{year}-{month_num}-{day.zfill(2)}"
             
-            # Try to extract time from ticket URL or other elements
-            # Time might be in the aria-label or title
+            # The show time sits in a link label or title ("... | 09 November 6:30 PM"). Since
+            # about 2026-11-04 it's no longer on the ticket button, so check every link in the event.
             time_match = None
-            if ticket_link and ticket_link.get('aria-label'):
-                time_match = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)', ticket_link['aria-label'])
+            for link in ([ticket_link] if ticket_link else []) + section.find_all('a'):
+                for attr in ('aria-label', 'title'):
+                    time_match = re.search(r'(\d{1,2}):(\d{2})\s*(AM|PM)', link.get(attr) or '')
+                    if time_match:
+                        break
+                if time_match:
+                    break
             
             start_time = None
             if time_match:
