@@ -181,7 +181,8 @@ def init_db():
         # that doesn't exist yet into a SELECT with ones that do fails the whole query, not
         # just that column, so this has to be proactive rather than left to a try/except.
         for col in ('new_events', 'canceled_events', 'total_pending', 'scrape_mode',
-                    'updated_events', 'date_corrections', 'content_changes', 'splits', 'error', 'leak_pairs'):
+                    'updated_events', 'date_corrections', 'content_changes', 'splits', 'error', 'leak_pairs',
+                    'link_changes'):
             default = "''" if col == 'scrape_mode' else ('NULL' if col in ('error', 'leak_pairs') else '0')
             coltype = 'TEXT' if col in ('scrape_mode', 'error') else 'INTEGER'
             c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} {coltype} DEFAULT {default}''')
@@ -278,7 +279,7 @@ def init_db():
             ('new_events', 'INTEGER', '0'), ('canceled_events', 'INTEGER', '0'),
             ('total_pending', 'INTEGER', '0'), ('scrape_mode', 'TEXT', "''"),
             ('updated_events', 'INTEGER', '0'), ('date_corrections', 'INTEGER', '0'),
-            ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'), ('leak_pairs', 'INTEGER', 'NULL'),
+            ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'), ('leak_pairs', 'INTEGER', 'NULL'), ('link_changes', 'INTEGER', '0'),
         ):
             if col not in existing_cols:
                 c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
@@ -1149,7 +1150,7 @@ def _venue_health_inner():
         try:
             c.execute('''
                 SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
-                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0)
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0)
                 FROM scrape_stats
                 WHERE scrape_date >= (CURRENT_DATE - INTERVAL '30 days')::text
                 GROUP BY venue
@@ -1203,7 +1204,7 @@ def _venue_health_inner():
         try:
             c.execute('''
                 SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
-                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0)
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0)
                 FROM scrape_stats
                 WHERE scrape_date >= date('now','-30 days')
                 GROUP BY venue
@@ -1240,7 +1241,7 @@ def _venue_health_inner():
     conn.close()
 
     key_to_scraped = {r[0]: r[1] for r in cache_rows}
-    venue_to_updates = {r[0]: (r[1], r[2], r[3], r[4]) for r in update_rows}
+    venue_to_updates = {r[0]: (r[1], r[2], r[3], r[4], r[5]) for r in update_rows}
     name_to_key = {v: k for k, v in VENUE_KEY_TO_NAME.items()}
     now_dt = datetime.now(CENTRAL)
 
@@ -1261,12 +1262,13 @@ def _venue_health_inner():
         d = dict(zip(cols, row))
         key = name_to_key.get(d['venue'])
         last_scraped_raw = key_to_scraped.get(key) if key else None
-        updated_30d, date_corrections_30d, total_scraped_30d, content_changes_30d = \
-            venue_to_updates.get(d['venue'], (0, 0, 0, 0))
+        updated_30d, date_corrections_30d, total_scraped_30d, content_changes_30d, link_changes_30d = \
+            venue_to_updates.get(d['venue'], (0, 0, 0, 0, 0))
         d['updated_30d'] = updated_30d
         d['date_corrections_30d'] = date_corrections_30d
         d['total_scraped_30d'] = total_scraped_30d
         d['content_changes_30d'] = content_changes_30d
+        d['link_changes_30d'] = link_changes_30d
         d.update(venue_to_errors.get(d['venue'], {'errors_7d': 0, 'last_error': None, 'splits_7d': 0}))
         d['leak_pairs'] = venue_to_leaks.get(d['venue'])
 

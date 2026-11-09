@@ -2512,6 +2512,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
     # openers, etc. later) for venue_health to flag unstable extraction the same way
     # date_corrections already does for dates.
     content_changes = 0
+    # Saved events whose ticket or event link changed or was filled in, shown on venue health.
+    link_changes = 0
 
     for i, event in enumerate(events):
         try:
@@ -2551,6 +2553,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     c.execute(f'UPDATE events SET {set_clause} WHERE id = {ph}',
                               list(backfill.values()) + [ex_id])
                     print(f"  ↻ Backfilled ({', '.join(backfill)}): {event['name']}")
+                    link_changes += 1
                 legacy_outcomes[i] = {'outcome': 'exact_skip', 'target_id': ex_id}
                 skipped += 1
                 continue
@@ -2676,6 +2679,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
                     label = f"{ex_name} → {event['name']}" if 'name' in changes else ex_name
                     if 'name' in changes:
                         content_changes += 1
+                    if 'ticket_url' in changes or 'event_url' in changes:
+                        link_changes += 1
                     if date_corrected:
                         date_corrections += 1
                         review_note = ' — sent back to pending for review' if changes.get('status') == 'pending' else ''
@@ -2794,6 +2799,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
         'updated': updated,
         'date_corrections': date_corrections,
         'content_changes': content_changes,
+        'link_changes': link_changes,
         'skipped': skipped,
         'flagged': flagged
     }
@@ -2813,6 +2819,7 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS updated_events INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS date_corrections INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS content_changes INTEGER DEFAULT 0''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS link_changes INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS splits INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS error TEXT''')
 
@@ -2827,8 +2834,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
          new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections,
-         content_changes, splits, error)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         content_changes, splits, error, link_changes)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
@@ -2840,7 +2847,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
          stats.get('date_corrections', 0),
          stats.get('content_changes', 0),
          SPLIT_COUNTS.pop(venue_name, 0),
-         error[:1000] if error else None))
+         error[:1000] if error else None,
+         stats.get('link_changes', 0)))
     conn.commit()
     conn.close()
 
