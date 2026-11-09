@@ -199,6 +199,11 @@ GET  /debug               # Debug info
 
 ## Known Issues / To-Do
 
+### LLM extraction weaknesses (observed 2026-11, no fix yet)
+Two patterns to keep in mind when reviewing extraction output or designing normalization:
+- **The first or day-of event is the least reliable.** The top listing on a page (often today's show, which venues restyle on the day) is where reads go wrong: Bad Astronaut's "do not resurrect" came back as the venue's own name on the morning of its 2026-11-07 show after three clean runs (its Prekindle slug is also blank: `/event/58642--houston`); Arena's 2026-10-29 run dated 14 shows to the run day; Secret Group's split second half defaulted every event to today (2026-11-02 dry run).
+- **One misread propagates.** Output is generated event by event, so an early error becomes a pattern the model continues: Arena 2026-11-03 (one misread link date, then the next four shows in June), Arena 2026-11-06 (dates shifted a month to a year, as far as 2028), Heights (each show given the next show's date, because the date block sits after the show). Removing the first misread fixes everything after it; a shorter prompt (2026-11-03 trim) reduced the cascade from five wrong dates to one.
+
 ### In Progress
 - [x] Event title cleanup — strip `(SOLD OUT)`, `(NEW DATE)`, venue references, Riot suffixes (prompt TITLE CLEANUP + `strip_venue_reference`)
 - [x] Add `sold_out`, `date_changed`, `openers` fields to DB and LLM prompt
