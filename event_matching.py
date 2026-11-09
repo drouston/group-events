@@ -262,6 +262,11 @@ def _rejected(row):
     return row.get('review_status') == 'rejected'
 
 
+def _open_review_item(row):
+    """A pending possible-duplicate row: a review item matching created and nobody resolved."""
+    return row.get('review_status') == 'pending' and row.get('duplicate_of_id') is not None
+
+
 def _decide_venue(idxs, events, rows, profile, today):
     """Decisions for one venue's slice of a batch. Rows are assigned to events by score,
     highest first, so page order never decides which event gets a row."""
@@ -339,12 +344,18 @@ def _decide_venue(idxs, events, rows, profile, today):
         d.update(score=total, parts=parts, target_id=rid)
         if others:
             d.update(runner_up_id=others[0][2]['id'], runner_up_score=others[0][0])
+        tied = [x[2] for x in others if x[0] >= REVIEW_AT and total - x[0] < TIE_MARGIN]
+        open_item = next((r for r in [target] + tied if _open_review_item(r)), None)
         if _rejected(target):
             if total >= UPDATE_AT:
                 d.update(decision='skip_rejected')
             else:
                 d.update(decision='review', reason='rejected_match')
-        elif others and others[0][0] >= REVIEW_AT and total - others[0][0] < TIE_MARGIN:
+        elif open_item is not None and (open_item is target or total < UPDATE_AT or tied):
+            # An unresolved review row already covers this show: keep it current instead of
+            # inserting another one each scrape.
+            d.update(decision='update', target_id=open_item['id'], reason='open_review_item')
+        elif tied:
             d.update(decision='review', reason='tie')
         else:
             d['decision'] = 'update' if total >= UPDATE_AT else 'review'

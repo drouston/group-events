@@ -176,11 +176,22 @@ def test_live_copy_wins_over_rejected_copy():
     assert decisions[0]['decision'] == 'update' and decisions[0]['target_id'] == 2, decisions
 
 
+def test_tie_updates_the_open_review_item():
+    from datetime import date
+    rows = [row(1, 'Jane Doe', '2026-12-01', '20:00'),
+            row(2, 'Jane Doe', '2026-12-01', '20:00', review_status='pending', duplicate_of_id=1)]
+    decisions, _, _, _ = em.decide_batch([listing('Jane Doe', '2026-12-01', '20:00')], {V: rows},
+                                         {'v': SINGLE}, today=date(2026, 11, 1))
+    assert decisions[0]['decision'] == 'update' and decisions[0]['target_id'] == 2 \
+        and decisions[0]['reason'] == 'open_review_item', decisions
+
+
 if __name__ == '__main__':
     for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
               test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
               test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing,
-              test_rejected_only_show_stays_rejected, test_live_copy_wins_over_rejected_copy):
+              test_rejected_only_show_stays_rejected, test_live_copy_wins_over_rejected_copy,
+              test_tie_updates_the_open_review_item):
         try:
             t()
             print('PASS', t.__name__)
