@@ -33,13 +33,13 @@
         }
 
         .header h1 {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             font-size: 32px;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -247,8 +247,10 @@
 
         .col-time { color: #888; width: 72px; white-space: nowrap; }
         .col-date { color: #888; width: 90px; white-space: nowrap; }
-        .col-venue { color: #888; }
-        .col-price { text-align: right; color: #888; white-space: nowrap; }
+        .col-venue { color: #888; width: 24%; }
+        .col-type-desktop { width: 120px; }
+        .col-type-desktop .col-subtext { padding-left: 9px; }
+        .col-price { text-align: right; color: #888; width: 150px; font-size: 13px; }
 
         .col-subtext {
             font-size: 11px;
@@ -588,6 +590,13 @@
                 : title;
         }
 
+        // Comedy needs no genre, and a genre that only repeats the type adds nothing.
+        function showGenre(e) {
+            if (!e.genre || e.event_type === 'comedy') return false;
+            const t = e.event_type || 'other';
+            return e.genre.toLowerCase() !== (TYPE_LABELS[t] || t).toLowerCase();
+        }
+
         function typeChip(e) {
             const t = e.event_type || 'other';
             return `<span class="type-chip chip-${t}">${TYPE_LABELS[t] || t}</span>`;
@@ -620,7 +629,7 @@
                     </td>
                     <td class="col-type-desktop">
                         <div>${typeChip(e)}</div>
-                        ${e.genre ? `<div class="col-subtext">${e.genre}</div>` : ''}
+                        ${showGenre(e) ? `<div class="col-subtext">${e.genre}</div>` : ''}
                     </td>
                     <td class="col-price">${price}</td>
                 </tr>

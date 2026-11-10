@@ -1047,6 +1047,15 @@ Return JSON: {"results": [{"i": 0, "type": "music"}, ...]}"""
             event['event_type'] = 'other'
 
 
+def timely_price(item):
+    """Timely's cost_display is a display-mode code ('0', '3'), not a price; use the real cost fields."""
+    if item.get('cost'):
+        return str(item['cost'])
+    if item.get('tickets_min_price'):
+        return f"{item.get('tickets_currency_symbol') or '$'}{item['tickets_min_price']}"
+    return None
+
+
 def scrape_timely_api(venue_config, mode='daily'):
     """Fetch events from Timely API for venues using Timely calendar"""
     import time as time_module
@@ -1104,7 +1113,7 @@ def scrape_timely_api(venue_config, mode='daily'):
                     'location': None,
                     'city': city,
                     'state': state,
-                    'price': item.get('cost_display'),
+                    'price': timely_price(item),
                     'ticket_url': ticket_url,
                     'event_url': item.get('url'),
                     'description': item.get('description_short', ''),

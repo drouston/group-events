@@ -5,7 +5,6 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 1600px;
             margin: 0 auto;
             padding: 20px;
             background: #f5f5f5;
@@ -1067,7 +1066,9 @@
             const venues = [...new Set(filteredEvents.map(e => e.venue).filter(Boolean))].sort();
             const statuses = [...new Set(filteredEvents.map(e => e.status).filter(Boolean))];
 
-            const colgroup = COLUMNS.map(c => `<col style="width:${c.width}px">`).join('');
+            // Name takes the leftover width; the minimum keeps fixed columns from squeezing it on narrow windows.
+            const colgroup = COLUMNS.map(c => c.key === 'name' ? '<col>' : `<col style="width:${c.width}px">`).join('');
+            const tableMinWidth = COLUMNS.reduce((sum, c) => sum + c.width, 0);
 
             const headerCells = COLUMNS.map((col, i) => {
                 const sortable = col.sortable ? 'sortable' : '';
@@ -1099,7 +1100,7 @@
 
             container.innerHTML = `
                 <div class="events-table-wrapper">
-                    <table class="events-table">
+                    <table class="events-table" style="min-width:${tableMinWidth}px">
                         <colgroup>${colgroup}</colgroup>
                         <thead>
                             <tr class="header-row">${headerCells}</tr>
