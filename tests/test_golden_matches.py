@@ -218,13 +218,23 @@ def test_past_row_is_never_a_postponement_target():
     assert decisions[0]['decision'] == 'insert', decisions
 
 
+def test_different_links_tip_an_exact_75_into_review():
+    from datetime import date
+    # A different show in the same slot and room, both with their own ticket link.
+    rows = [row(1, 'Jane Doe', '2026-12-01', '20:00', location='Upstairs', ticket_url='https://t/jane')]
+    ev = listing('John Roe', '2026-12-01', '20:00', location='Upstairs', ticket_url='https://t/john')
+    d = decide(ev, rows)
+    assert d['decision'] == 'review' and d['score'] == 74, d
+
+
 if __name__ == '__main__':
     for t in (test_golden_cases, test_batch_duplicate_within_one_scrape, test_two_shows_cannot_land_on_one_row,
               test_best_score_wins_regardless_of_page_order, test_city_calendar_feeds_are_excluded,
               test_recurring_series_inherited_at_insert, test_key_match_does_not_leave_stored_copies_missing,
               test_rejected_only_show_stays_rejected, test_live_copy_wins_over_rejected_copy,
               test_tie_updates_the_open_review_item, test_second_copy_is_skipped_not_passed_down,
-              test_early_show_is_not_mistaken_for_a_copy, test_past_row_is_never_a_postponement_target):
+              test_early_show_is_not_mistaken_for_a_copy, test_past_row_is_never_a_postponement_target,
+              test_different_links_tip_an_exact_75_into_review):
         try:
             t()
             print('PASS', t.__name__)

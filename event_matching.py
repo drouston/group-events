@@ -154,7 +154,11 @@ def sole_event_score(listing, cand, ctx):
 def url_score(listing, cand, ctx):
     mine = usable_links(listing, ctx['profile'], batch_ignored=ctx['batch_ignored'])
     theirs = usable_links(cand, ctx['profile'])
-    return 20 if mine & theirs else 0
+    if mine & theirs:
+        return 20
+    # Both linked but no link in common: a tie-breaker that tips an exact 75 into review
+    # (a different show in the same slot and room). Approved 2026-11-09.
+    return -1 if mine and theirs else 0
 
 
 def title_score(listing, cand, ctx):
