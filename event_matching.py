@@ -220,14 +220,15 @@ def in_block(listing, cand):
 # ---------- batch decisions ----------
 
 def looks_recurring(dates):
-    """Same weekday 3+ times, or a constant daily/weekly gap (mirrors _looks_recurring)."""
+    """Same weekday 3+ times, or a constant gap of 2+ days (mirrors _looks_recurring).
+    Back-to-back days are a multi-night run, never recurrence (2026-11-10)."""
     d = sorted({_date(x) for x in dates if _date(x)})
     if len(d) < 2:
         return False
     gaps = {(d[i + 1] - d[i]).days for i in range(len(d) - 1)}
     if len(d) == 2:
-        return gaps in ({1}, {7})
-    return (len(gaps) == 1 and gaps != {0}) or len({x.weekday() for x in d}) == 1
+        return gaps == {7}
+    return (len(gaps) == 1 and min(gaps) > 1) or len({x.weekday() for x in d}) == 1
 
 
 def _batch_ignored_links(events, profile):

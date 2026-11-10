@@ -3098,9 +3098,8 @@ def detect_existing_duplicates(dry_run=False):
     print(f"{'='*60}")
 
 def _looks_recurring(dates):
-    """True if a list of ISO date strings forms a regular weekly or daily pattern — the shape
-    a legitimate recurring class/show produces (Hotel Lucine's daily Sunset Pilates, weekly
-    Sunday Yoga), as opposed to the essentially arbitrary small offsets a genuine date-drift
+    """True if a list of ISO date strings forms a regular weekly (or other spaced) pattern — the
+    shape a legitimate recurring class/show produces (weekly Sunday Yoga), as opposed to the essentially arbitrary small offsets a genuine date-drift
     bug produces (the Heights Theater case this function was originally built for). Same-weekday
     alone requires 3+ dates — on just 2 dates it's too weak a signal, since a bug that misreads
     the wrong row of a weekly calendar grid would also land on the same weekday a clean number
@@ -3114,10 +3113,10 @@ def _looks_recurring(dates):
         return False
     gaps = {(d[i + 1] - d[i]).days for i in range(len(d) - 1)}
     if len(d) == 2:
-        # A single gap is trivially "constant" — only trust it if it's a recognizable
-        # recurring interval (daily or weekly), not just whatever the one gap happens to be.
-        return gaps in ({1}, {7})
-    if len(gaps) == 1 and gaps != {0}:
+        # A single gap is trivially "constant" — only trust a weekly one. Back-to-back days
+        # are a multi-night run, never recurrence (2026-11-10).
+        return gaps == {7}
+    if len(gaps) == 1 and min(gaps) > 1:
         return True
     if len(d) >= 3 and len({x.weekday() for x in d}) == 1:
         return True
