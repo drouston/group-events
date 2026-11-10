@@ -6,7 +6,7 @@ import sqlite3
 from collections import defaultdict
 from dateutil.utils import today
 from difflib import SequenceMatcher
-from status_model import migrate_status_columns
+from status_model import migrate_status_columns, legacy_status
 import event_matching as em
 from urllib.parse import urljoin, urlparse
 import requests
@@ -1887,6 +1887,13 @@ def pre_filter_dates(venue_name, page_text):
     if new_dates:
         print(f"  ℹ {len(new_dates)} potentially new date(s) detected")
 
+def _legacy_cancel(venue_key, events, dry_run):
+    """Legacy cancellation, unless unified matching owns the venue (it cancels at save time)."""
+    if dry_run or (MATCH_ENGINE == 'unified' and not is_city_calendar(venue_key)):
+        return 0
+    return check_canceled_events(venue_key, events)
+
+
 def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
@@ -1905,24 +1912,24 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # Timely API venues — bypass Selenium + LLM entirely
     if venue.get('timely_calendar_id'):
         events = scrape_timely_api(venue, mode)
-        return events, (0 if dry_run else check_canceled_events(venue_key, events))
+        return events, _legacy_cancel(venue_key, events, dry_run)
 
     # SeeTickets venues — scrape with Selenium but parse with custom HTML parser, no LLM
     if venue.get('seetickets'):
         _, html = scrape_page(venue['url'], wait_time=venue.get('wait_time', 3),
                             scroll_count=venue.get('scroll_count', 1),load_more_id=venue.get('load_more_id'))
         events = parse_seetickets_html(html, venue)
-        return events, (0 if dry_run else check_canceled_events(venue_key, events))
+        return events, _legacy_cancel(venue_key, events, dry_run)
 
     # AJAX venues — fetch all paginated HTML fragments and parse with LLM in one go
     if venue.get('ajax_url'):
         events = ajax_scrape(venue, mode)
-        return events, (0 if dry_run else check_canceled_events(venue_key, events))
+        return events, _legacy_cancel(venue_key, events, dry_run)
 
     # Google Calendar ICS feed — bypass Selenium + LLM entirely
     if venue.get('ical_url'):
         events = scrape_google_ics(venue, mode)
-        return events, (0 if dry_run else check_canceled_events(venue_key, events))
+        return events, _legacy_cancel(venue_key, events, dry_run)
 
     debug = venue_key in ['white_oak']
     scroll_count = venue.get('scroll_count', 1)
@@ -2144,7 +2151,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     # processed changed content (any mode, not just weekly), check for all three.
     # The hash-check above already skipped this entirely if nothing changed.
     # A dry run must not flag or cancel anything.
-    canceled_count = 0 if dry_run else check_canceled_events(venue_key, events)
+    canceled_count = _legacy_cancel(venue_key, events, dry_run)
 
     # Update stored hash
     if not dry_run:
@@ -2178,7 +2185,7 @@ def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=
             all_events.extend(events)
             if events is not None and not dry_run:
                 stats = save_to_database(events, mode=mode, auto_approve=auto_approve)
-                log_scrape_stats(VENUES[venue_key]['name'], mode, stats, canceled_count)
+                log_scrape_stats(VENUES[venue_key]['name'], mode, stats, canceled_count + (stats or {}).get('canceled', 0))
         except Exception as e:
             print(f"✗ Error scraping {VENUES[venue_key]['name']}: {e}")
             if not dry_run:
@@ -2258,7 +2265,8 @@ def expand_multi_night_events(events):
 LAST_CANCEL_CHECK = {}
 
 MATCH_ROW_COLS = ('id', 'name', 'start_date', 'start_time', 'doors_time', 'location', 'ticket_url',
-                  'event_url', 'review_status', 'event_status', 'recurring', 'duplicate_of_id', 'venue', 'source')
+                  'event_url', 'review_status', 'event_status', 'recurring', 'duplicate_of_id', 'venue', 'source',
+                  'cancel_flagged_at')
 
 
 def _load_match_rows(c, venues, since, keys=()):
@@ -2318,7 +2326,8 @@ def shadow_log(c, events, shadow, legacy_outcomes, mode):
         now = datetime.now().isoformat()
         postponement_targets = set()
         for d, ev, lo in zip(shadow['decisions'], events, legacy_outcomes):
-            lo = lo or {'outcome': 'unknown'}
+            agree = em.agrees(d, lo) if lo else None
+            lo = lo or {'outcome': 'unified' if unified_owns(ev) else 'unknown'}
             if d['decision'] == 'review' and d.get('reason') == 'possible_postponement':
                 postponement_targets.add(d['target_id'])
             c.execute('''INSERT INTO match_log (logged_at, mode, kind, venue, venue_key, event_name, start_date,
@@ -2331,7 +2340,7 @@ def shadow_log(c, events, shadow, legacy_outcomes, mode):
                        json.dumps(d['parts']) if d['parts'] else None,
                        None if d['runner_up_id'] is None else str(d['runner_up_id']), d['runner_up_score'],
                        d.get('reason'), lo.get('outcome'), lo.get('target_id'), lo.get('new_id'),
-                       em.agrees(d, lo),
+                       agree,
                        json.dumps({k: v for k, v in (('recurring', d.get('recurring')),
                                                      ('anomalies', shadow['anomalies'].get(ev.get('venue'))))
                                    if v}) or None))
@@ -2471,6 +2480,159 @@ def leak_report(write=False):
     return per_venue
 
 
+# ---------- unified matching, live writes (MATCH_ENGINE=unified) ----------
+
+# unified (default): scorer decisions are written. shadow: logged only, legacy writes.
+# legacy: scorer off. Multi-venue city calendar feeds always use the legacy path.
+MATCH_ENGINE = os.environ.get('MATCH_ENGINE', 'unified').strip().lower()
+
+VISIBLE_TYPES = ('music', 'comedy', 'performing_arts', 'arts', 'sports')
+UPDATE_TEXT_FIELDS = ('name', 'start_date', 'end_date', 'doors_time', 'start_time', 'end_time', 'price',
+                      'ticket_url', 'event_url', 'description', 'genre', 'location', 'openers')
+LINK_FIELD_NAMES = ('ticket_url', 'event_url')
+
+
+def is_city_calendar(venue_key):
+    """Multi-venue aggregator feeds: excluded from unified matching (CLAUDE.md to-do)."""
+    cfg = VENUES.get(venue_key) or {}
+    return bool(cfg.get('ical_url')) and not cfg.get('ics_single_venue')
+
+
+def unified_owns(event):
+    return MATCH_ENGINE == 'unified' and event.get('venue_key') and not is_city_calendar(event.get('venue_key'))
+
+
+def _row_values(c, ph, row_id, fields):
+    c.execute(f"SELECT {', '.join(fields)} FROM events WHERE id = {ph}", (row_id,))
+    r = c.fetchone()
+    return dict(zip(fields, r)) if r else None
+
+
+def _apply_update(c, ph, event, row_id, stats):
+    """Copy the listing's non-empty details onto an existing row. A canceled row comes back
+    as scheduled and pending review; a tentative one is cleared."""
+    fields = UPDATE_TEXT_FIELDS + ('sold_out', 'date_changed', 'event_status', 'cancel_flagged_at')
+    row = _row_values(c, ph, row_id, fields)
+    if row is None:
+        return
+    changes = {}
+    for f in UPDATE_TEXT_FIELDS:
+        v = event.get(f)
+        if v not in (None, '') and str(v) != str(row[f] or ''):
+            changes[f] = v
+    if 'sold_out' in event and bool(event['sold_out']) != bool(row['sold_out']):
+        changes['sold_out'] = bool(event['sold_out'])
+    if event.get('date_changed') and not row['date_changed']:
+        changes['date_changed'] = True
+    if row['event_status'] == 'canceled':
+        changes.update(event_status='scheduled', review_status='pending')
+    if row['cancel_flagged_at']:
+        changes['cancel_flagged_at'] = None
+    if not changes:
+        return
+    c.execute(f"UPDATE events SET {', '.join(f'{k} = {ph}' for k in changes)} WHERE id = {ph}",
+              list(changes.values()) + [row_id])
+    stats['updated'] += 1
+    if 'name' in changes:
+        stats['content_changes'] += 1
+    if 'start_date' in changes:
+        stats['date_corrections'] += 1
+    if any(f in changes for f in LINK_FIELD_NAMES):
+        stats['link_changes'] += 1
+    label = f"{event.get('name')}"
+    print(f"  ↻ Updated #{row_id} ({', '.join(k for k in changes if k not in ('cancel_flagged_at',))}): {label}")
+
+
+def _apply_insert(c, ph, event, auto_approve, duplicate_of_id, recurring, stats):
+    event_type = event.get('event_type', 'music')
+    if not event.get('genre') and event_type == 'comedy':
+        event['genre'] = 'Comedy'
+    cfg = VENUES.get(event.get('venue_key')) or {}
+    approve = (auto_approve or cfg.get('auto_approve', False)) and duplicate_of_id is None \
+        and 'long_range' not in event.get('flags', []) \
+        and not (event.get('end_date') and str(event['end_date'])[:10] != event.get('start_date'))
+    review_status = 'approved' if approve else 'pending'
+    status = legacy_status(review_status, 'scheduled', duplicate_of_id)
+    c.execute(f'''INSERT INTO events
+                  (name, start_date, end_date, doors_time, start_time, end_time, multi_day, venue, location,
+                   city, state, price, ticket_url, event_url, venue_url, description, genre, confidence,
+                   status, review_status, event_status, created_at, event_type, visible, sold_out,
+                   date_changed, openers, duplicate_of_id, flags, source, recurring)
+                  VALUES ({', '.join([ph] * 31)})''',
+              (event['name'], event.get('start_date'), event.get('end_date'), event.get('doors_time'),
+               event.get('start_time'), event.get('end_time'), event.get('multi_day', False), event['venue'],
+               event.get('location'), event.get('city', ''), event.get('state', ''), event.get('price'),
+               event.get('ticket_url'), event.get('event_url'), event.get('venue_url', ''),
+               event.get('description'), event.get('genre'), json.dumps(event.get('confidence', {})),
+               status, review_status, 'scheduled', datetime.now().isoformat(), event_type,
+               event_type in VISIBLE_TYPES, event.get('sold_out', False), event.get('date_changed', False),
+               event.get('openers'), duplicate_of_id, json.dumps(event.get('flags', [])),
+               event.get('venue_key'), recurring))
+    if duplicate_of_id is not None:
+        stats['flagged'] += 1
+        print(f"  ⚠ Review (linked to #{duplicate_of_id}): {event['name']}")
+    else:
+        stats['inserted'] += 1
+
+
+def apply_unified(c, ph, events, shadow, auto_approve, stats):
+    """Write the scorer's decision for every event unified matching owns."""
+    for d, ev in zip(shadow['decisions'], events):
+        if not unified_owns(ev):
+            continue
+        try:
+            decision, target = d['decision'], d['target_id']
+            target = int(target) if isinstance(target, int) or (isinstance(target, str) and target.isdigit()) else None
+            if decision in ('update', 'reschedule') and target is not None:
+                _apply_update(c, ph, ev, target, stats)
+                stats['skipped'] += 1
+            elif decision == 'review':
+                _apply_insert(c, ph, ev, auto_approve, target, None, stats)
+            elif decision == 'insert':
+                _apply_insert(c, ph, ev, auto_approve, None, d.get('recurring'), stats)
+            else:  # batch_duplicate, skip_rejected, excluded, or an update aimed at a same-batch listing
+                stats['skipped'] += 1
+        except Exception as e:
+            print(f"  ✗ Unified write failed for {ev.get('name')}: {e}")
+
+
+def cancel_unified(c, ph, events, shadow):
+    """Cancellation from the scorer: an active future row no listing matched or scored 55+
+    against is missing. Same safety layers as check_canceled_events: an empty scrape is
+    skipped, a run missing more than max(3, 30%) of active rows is skipped, and a row is
+    only canceled on its second consecutive miss."""
+    canceled = 0
+    today = datetime.now().date().isoformat()
+    now = datetime.now().isoformat()
+    postponement_targets = {d['target_id'] for d in shadow['decisions'] if d.get('reason') == 'possible_postponement'}
+    for venue_key in {e.get('venue_key') for e in events if unified_owns(e)}:
+        venue = VENUES[venue_key]['name']
+        rows = shadow['rows_by_venue'].get(venue, [])
+        active = [r for r in rows if r['start_date'] >= today and r['review_status'] in ('pending', 'approved')
+                  and r['event_status'] != 'canceled']
+        missing = set(em.missing_rows(active, shadow['claimed'], shadow['best_against'], postponement_targets))
+        for r in active:
+            if r['id'] not in missing and r.get('cancel_flagged_at'):
+                c.execute(f"UPDATE events SET cancel_flagged_at = NULL WHERE id = {ph}", (r['id'],))
+                print(f"  ↺ No longer missing, clearing flag: {r['name']}")
+        cap = max(3, int(len(active) * 0.3))
+        if len(missing) > cap:
+            print(f"  ⚠ {len(missing)} events missing at once for {venue} (cap {cap} of {len(active)}) — "
+                  f"treating as an unreliable scrape and skipping cancellation")
+            continue
+        for r in active:
+            if r['id'] not in missing:
+                continue
+            if r.get('cancel_flagged_at'):
+                c.execute(f"UPDATE events SET event_status = 'canceled', cancel_flagged_at = NULL WHERE id = {ph}", (r['id'],))
+                canceled += 1
+                print(f"  ⚠ Confirmed canceled (missing 2 scrapes in a row): {r['name']} on {r['start_date']}")
+            else:
+                c.execute(f"UPDATE events SET cancel_flagged_at = {ph} WHERE id = {ph}", (now, r['id']))
+                print(f"  ⚑ Flagged as cancellation candidate: {r['name']} on {r['start_date']}")
+    return canceled
+
+
 def save_to_database(events, mode='daily', auto_approve=False):
     """Save events to database with exact and partial duplicate detection"""
     from difflib import SequenceMatcher
@@ -2506,6 +2668,9 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     legacy_outcomes = [None] * len(events)
     shadow = shadow_decide(c, events)
+    unified_active = MATCH_ENGINE == 'unified' and shadow is not None
+    if MATCH_ENGINE == 'unified' and shadow is None:
+        print("  ⚠ Unified matching unavailable for this batch; falling back to the legacy path")
 
     inserted = 0
     skipped = 0
@@ -2521,6 +2686,8 @@ def save_to_database(events, mode='daily', auto_approve=False):
     link_changes = 0
 
     for i, event in enumerate(events):
+        if unified_active and unified_owns(event):
+            continue
         try:
             # Computed early — needed both for the URL-match date-correction gate below and
             # the new-insert status decision further down.
@@ -2794,6 +2961,15 @@ def save_to_database(events, mode='daily', auto_approve=False):
             print(f"Error inserting {event['name']}: {e}")
             legacy_outcomes[i] = {'outcome': 'error'}
 
+    canceled = 0
+    if unified_active:
+        u = dict.fromkeys(('inserted', 'updated', 'date_corrections', 'content_changes', 'link_changes',
+                           'skipped', 'flagged'), 0)
+        apply_unified(c, ph, events, shadow, auto_approve, u)
+        canceled = cancel_unified(c, ph, events, shadow)
+        inserted += u['inserted']; updated += u['updated']; date_corrections += u['date_corrections']
+        content_changes += u['content_changes']; link_changes += u['link_changes']
+        skipped += u['skipped']; flagged += u['flagged']
     conn.commit()
     shadow_log(c, events, shadow, legacy_outcomes, mode)
     conn.commit()
@@ -2805,6 +2981,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
         'date_corrections': date_corrections,
         'content_changes': content_changes,
         'link_changes': link_changes,
+        'canceled': canceled,
         'skipped': skipped,
         'flagged': flagged
     }
@@ -3164,9 +3341,10 @@ if __name__ == "__main__":
             leak_report(write=True)
         except Exception as e:
             print(f"  ⚠ Leak monitor failed: {e}")
-        print(f"\n=== Weekly duplicate sweep ===")
-        detect_existing_duplicates(dry_run=False)
-        detect_url_date_conflicts(dry_run=False)
+        if MATCH_ENGINE != 'unified':
+            print(f"\n=== Weekly duplicate sweep ===")
+            detect_existing_duplicates(dry_run=False)
+            detect_url_date_conflicts(dry_run=False)
 
     if args.venue:
         if args.venue not in VENUES:
@@ -3185,7 +3363,7 @@ if __name__ == "__main__":
                 for e in events:
                     e.setdefault('venue_key', args.venue)
                 stats = save_to_database(events, mode=args.mode, auto_approve=args.auto_approve)
-                log_scrape_stats(VENUES[args.venue]['name'], args.mode, stats, canceled_count)
+                log_scrape_stats(VENUES[args.venue]['name'], args.mode, stats, canceled_count + (stats or {}).get('canceled', 0))
     else:
         all_events = scrape_all_venues(mode=args.mode, llm=args.llm, auto_approve=args.auto_approve, group=args.group,
                                        dry_run=args.dry_run)
