@@ -1586,6 +1586,28 @@
             return filteredEvents[index];
         }
 
+        // Approve/reject/update keep the row on screen: apply the new status locally and
+        // re-render just that row, so its chips change without re-running the filters.
+        function markReviewed(row, changes) {
+            const event = getRowEventData(row);
+            if (!event || !row.isConnected) return;
+            Object.assign(event, changes);
+            const pos = Array.from(document.querySelectorAll('.event-row')).indexOf(row);
+            const tmp = document.createElement('tbody');
+            tmp.innerHTML = rowHtml(event, parseInt(row.dataset.index), pos);
+            const [newMain, newDetail] = tmp.children;
+            const detail = getDetailRow(row);
+            if (detail && detail.classList.contains('detail-row') && newDetail) detail.replaceWith(newDetail);
+            if (row.classList.contains('kbd-focus')) newMain.classList.add('kbd-focus');
+            row.replaceWith(newMain);
+            updateStats(displayedEvents.map(i => i.event));
+            updateSelectedCount();
+            const selectAll = document.getElementById('select-all');
+            if (selectAll && document.querySelectorAll('.event-checkbox:checked').length === 0) {
+                selectAll.checked = false;
+            }
+        }
+
         function removeRow(row) {
             const detail = getDetailRow(row);
             if (detail && detail.classList.contains('detail-row')) detail.remove();
@@ -1693,9 +1715,15 @@
             .then(response => response.json())
             .then(data => {
                 row.style.background = '#e8f5e9';
-                setTimeout(() => removeRow(row), 500);
+                setTimeout(() => markReviewed(row, approvedChanges(row)), 500);
                 setTimeout(() => keyProcessing = false, 1000);
             });
+        }
+
+        function approvedChanges(row) {
+            const ev = getRowEventData(row) || {};
+            return {status: 'approved', review_status: 'approved',
+                    event_status: ev.event_status === 'canceled' ? 'scheduled' : ev.event_status};
         }
 
         // Reviewer decided this row is an existing event: carry its details onto that event.
@@ -1718,7 +1746,7 @@
             .then(({ok, data}) => {
                 if (!ok) throw new Error(data.message || 'Update failed');
                 row.style.background = '#e3f2fd';
-                setTimeout(() => removeRow(row), 500);
+                setTimeout(() => markReviewed(row, {status: 'rejected', review_status: 'rejected'}), 500);
                 setTimeout(() => keyProcessing = false, 1000);
             })
             .catch(err => {
@@ -1742,7 +1770,7 @@
             .then(response => response.json())
             .then(data => {
                 row.style.background = '#ffebee';
-                setTimeout(() => removeRow(row), 500);
+                setTimeout(() => markReviewed(row, {status: 'rejected', review_status: 'rejected'}), 500);
                 setTimeout(() => keyProcessing = false, 1000);
             });
         }
@@ -1816,7 +1844,8 @@
             .then(data => {
                 selectedRows.forEach(row => {
                     row.style.background = '#e8f5e9';
-                    setTimeout(() => removeRow(row), 500);
+                    const changes = approvedChanges(row);
+                    setTimeout(() => markReviewed(row, changes), 500);
                 });
             });
         }
@@ -1839,7 +1868,7 @@
             .then(data => {
                 selectedRows.forEach(row => {
                     row.style.background = '#ffebee';
-                    setTimeout(() => removeRow(row), 500);
+                    setTimeout(() => markReviewed(row, {status: 'rejected', review_status: 'rejected'}), 500);
                 });
             });
         }
@@ -1894,6 +1923,14 @@
             });
         }
 
+        function focusNextRow(rows, currentRow) {
+            if (focusedRowIndex >= rows.length - 1) return;
+            currentRow.classList.remove('kbd-focus');
+            focusedRowIndex += 1;
+            rows[focusedRowIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            rows[focusedRowIndex].classList.add('kbd-focus');
+        }
+
         // Keyboard shortcuts
         document.addEventListener('keydown', function(e) {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
@@ -1918,11 +1955,11 @@
             } else if (e.key === 'a' || e.key === 'A') {
                 e.preventDefault();
                 const approveBtn = currentRow.querySelector('[data-action="approve"]');
-                if (approveBtn) approveEvent(currentRow);
+                if (approveBtn) { approveEvent(currentRow); focusNextRow(rows, currentRow); }
             } else if (e.key === 'r' || e.key === 'R') {
                 e.preventDefault();
                 const rejectBtn = currentRow.querySelector('[data-action="reject"]');
-                if (rejectBtn) rejectEvent(currentRow);
+                if (rejectBtn) { rejectEvent(currentRow); focusNextRow(rows, currentRow); }
             } else if (e.key === 'e' || e.key === 'E') {
                 e.preventDefault();
                 toggleEditMode(currentRow);
