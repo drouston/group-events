@@ -2713,7 +2713,7 @@ def save_to_database(events, mode='daily', auto_approve=False):
 
     #Current behavior is to filter out past events before saving to DB, but consider revisiting before next year events become common on websites. LLM likely to be used to address.
     before = len(events)
-    events = [e for e in events if e.get('start_date', '') >= today]
+    events = [e for e in events if (e.get('start_date') or '') >= today]
     filtered = before - len(events)
     if filtered:
         print(f"  ↷ Filtered {filtered} past events")
