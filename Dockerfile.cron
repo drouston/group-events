@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     unzip \
     curl \
+    tini \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
@@ -35,4 +36,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# tini as PID 1 reaps orphaned Chrome processes. A Railway start command replaces this
+# entrypoint, so each cron service's start command begins with `tini --` too.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "universal_scraper.py"]

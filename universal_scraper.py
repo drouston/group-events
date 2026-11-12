@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.common.exceptions import TimeoutException
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import anthropic
@@ -940,11 +942,20 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
-    
-    driver = webdriver.Chrome(options=chrome_options)
-    
+
+    _log_process_counts()
+    # Own process group, so every Chrome process this page started can be killed afterwards.
+    service = ChromeService(popen_kw={'start_new_session': True})
+    driver = webdriver.Chrome(options=chrome_options, service=service)
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+
     try:
-        driver.get(url)
+        try:
+            driver.get(url)
+        except TimeoutException:
+            # Keep whatever loaded; a hung page otherwise blocks for Chrome's 300s default.
+            print(f"  Page load passed {PAGE_LOAD_TIMEOUT}s, using what loaded so far")
+            driver.execute_script("window.stop();")
         time.sleep(wait_time)
         
         for i in range(scroll_count):
@@ -1012,9 +1023,58 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
         print(f"HTML length: {len(html)} characters")  # Show raw HTML size
 
         return page_text, html  # Return both
-        
+
     finally:
+        _shutdown_driver(driver, service)
+
+
+PAGE_LOAD_TIMEOUT = 60
+
+
+def _shutdown_driver(driver, service):
+    """Quit Chrome, kill anything left in its process group, and reap dead children.
+    In the cron container Python is PID 1, so orphaned Chrome processes are never reaped
+    otherwise and pile up until new sessions can't start."""
+    import signal
+    pid = service.process.pid if getattr(service, 'process', None) else None
+    try:
         driver.quit()
+    except Exception as e:
+        print(f"  driver.quit() failed: {type(e).__name__}")
+    if pid:
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    _reap_children()
+
+
+def _reap_children():
+    while True:
+        try:
+            child, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if child == 0:
+            return
+
+
+def _log_process_counts():
+    """Linux only: total and zombie process counts, to watch for leaks across a run."""
+    if not os.path.isdir('/proc/self'):
+        return
+    total = zombies = 0
+    for p in os.listdir('/proc'):
+        if not p.isdigit():
+            continue
+        try:
+            with open(f'/proc/{p}/stat') as f:
+                state = f.read().rsplit(')', 1)[1].split()[0]
+        except OSError:
+            continue
+        total += 1
+        zombies += state == 'Z'
+    print(f"  [procs] {total} processes, {zombies} zombies")
 
 def classify_event_types(events, llm='gpt4o-mini'):
     """Batch classify event_type for events that don't have one set. Updates dicts in place."""

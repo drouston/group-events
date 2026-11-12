@@ -168,8 +168,10 @@ See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes 
 
 ## Railway Deployment
 - **Web service:** `python review_dashboard.py` — Flask app
-- **Daily cron:** `python universal_scraper.py --mode daily` — runs Tue-Sun at 6am
-- **Weekly cron:** `python universal_scraper.py --mode weekly` — runs every Monday at 6am
+- **Daily cron:** `tini -- python universal_scraper.py --mode daily` — runs Tue-Sun at 6am UTC
+- **Afternoon cron:** `tini -- python universal_scraper.py --mode daily --group afternoon` — daily at 17:00 UTC
+- **Weekly cron:** `tini -- python universal_scraper.py --mode weekly` — runs every Monday at 6am UTC
+- Cron start commands begin with `tini --` (2026-11-12): without an init process Python is PID 1, orphaned Chrome processes are never reaped, and from about the 50th Chrome launch every session fails ("failed to start a thread", "session not created"). A Railway start command replaces the Dockerfile ENTRYPOINT, so tini must stay in the start command. `scrape_page` also kills each Chrome's process group and logs `[procs] N processes, M zombies` per fetch.
 
 **Environment variables needed:**
 - `DATABASE_URL` — Railway PostgreSQL public connection string
@@ -237,6 +239,7 @@ Two patterns to keep in mind when reviewing extraction output or designing norma
 
 ### Architecture / Scale
 - [ ] Venues table — migrate VENUES dict from scraper to DB
+- [ ] Split the single sequential scrape run (decided 2026-11-12): per-venue subprocesses or separate cron groups; reuse one Chrome per worker only if needed
 - [ ] Redis + RQ job queue for parallel scraping
 - [ ] Scheduler service to replace cron
 - [ ] LLM worker separation from scraper workers
