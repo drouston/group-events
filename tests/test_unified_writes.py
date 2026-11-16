@@ -104,8 +104,36 @@ def test_canceled_row_reactivates():
     assert get(c, rid)[4] == 'scheduled' and get(c, rid)[3] == 'pending', get(c, rid)
 
 
+def test_cancellation_per_event_venue():
+    """A scraper whose events carry their own venue names (Timely rooms) is checked per name;
+    a room absent from the run is left alone."""
+    conn, c = db()
+    key = 'continental_club'
+    assert us.VENUES[key]['name'] not in ('Room A', 'Room B')
+    def put(name, venue, t):
+        c.execute("INSERT INTO events (name, start_date, start_time, venue, review_status, event_status, status) "
+                  "VALUES (?,?,?,?,'approved','scheduled','approved')", (name, D2, t, venue))
+        return c.lastrowid
+    a = [put(f'A Act {i}', 'Room A', f'1{i}:00') for i in range(5)]
+    gone = put('A Gone', 'Room A', '23:00')
+    b = [put(f'B Act {i}', 'Room B', f'1{i}:00') for i in range(5)]
+    evs = [{'name': f'A Act {i}', 'start_date': D2, 'start_time': f'1{i}:00', 'venue': 'Room A',
+            'venue_key': key, 'event_type': 'music'} for i in range(5)]   # Room B absent this run
+    c.execute(f"SELECT {', '.join(us.MATCH_ROW_COLS)} FROM events")
+    by_venue = {}
+    for r in c.fetchall():
+        row = dict(zip(us.MATCH_ROW_COLS, r))
+        by_venue.setdefault(row['venue'], []).append(row)
+    decisions, claimed, best, _ = em.decide_batch(evs, by_venue, us.VENUES)
+    us.cancel_unified(c, '?', evs, dict(decisions=decisions, claimed=claimed, best_against=best,
+                                        rows_by_venue=by_venue))
+    assert get(c, gone)[5] is not None, get(c, gone)                        # missing in Room A: flagged
+    assert all(get(c, r)[5] is None for r in a + b)                         # Room B untouched
+
+
 if __name__ == '__main__':
-    for t in (test_update_reschedule_insert, test_review_links_and_cancellation_two_misses, test_canceled_row_reactivates):
+    for t in (test_update_reschedule_insert, test_review_links_and_cancellation_two_misses, test_canceled_row_reactivates,
+              test_cancellation_per_event_venue):
         try:
             t()
             print('PASS', t.__name__)

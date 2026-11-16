@@ -2674,8 +2674,11 @@ def cancel_unified(c, ph, events, shadow):
     today = datetime.now().date().isoformat()
     now = datetime.now().isoformat()
     postponement_targets = {d['target_id'] for d in shadow['decisions'] if d.get('reason') == 'possible_postponement'}
-    for venue_key in {e.get('venue_key') for e in events if unified_owns(e)}:
-        venue = VENUES[venue_key]['name']
+    # Each venue name the batch produced, plus the config name (rename fallback rows), is checked
+    # on its own; a venue that came back empty isn't checked (venue health covers it).
+    groups = {(e['venue_key'], e['venue']) for e in events if unified_owns(e) and e.get('venue')}
+    groups |= {(k, VENUES[k]['name']) for k, _ in groups}
+    for venue_key, venue in sorted(groups):
         rows = shadow['rows_by_venue'].get(venue, [])
         active = [r for r in rows if r['start_date'] >= today and r['review_status'] in ('pending', 'approved')
                   and r['event_status'] != 'canceled']
