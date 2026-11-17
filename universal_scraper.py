@@ -16,6 +16,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.common.exceptions import TimeoutException
+import page_trim
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import anthropic
@@ -932,8 +933,9 @@ def check_canceled_events(venue_key, scraped_events):
     print(f"  {canceled_count} events confirmed canceled, {reactivated_count} reactivated for {venue_name}")
     return canceled_count
 
-def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None, pagination_sentinel=None):
-    """Scrape a page using Selenium"""
+def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None, pagination_sentinel=None,
+                trim_duplicate_text=False, trim_hidden_text=False):
+    """Scrape a page using Selenium. The trim flags are page_trim's steps (see trim_options)."""
     print(f"Fetching {url}...")
     
     chrome_options = Options()
@@ -942,6 +944,8 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
     chrome_options.add_argument('--disable-dev-shm-usage')
     chrome_options.add_argument('--disable-gpu')
     chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
+    if trim_hidden_text:
+        chrome_options.add_argument(f'--window-size={page_trim.WINDOW_SIZE}')
 
     _log_process_counts()
     # Own process group, so every Chrome process this page started can be killed afterwards.
@@ -987,6 +991,9 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
                 except:
                     break
 
+        if trim_hidden_text:
+            marked, width = driver.execute_script(page_trim.MARK_HIDDEN_JS)
+            print(f"  [trim] {marked} hidden elements at width {width}")
         html = driver.page_source
         
         if debug:
@@ -995,29 +1002,7 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
                 f.write(html)
             print(f"Saved debug HTML to {filename}")
         
-        soup = BeautifulSoup(html, 'html.parser')
-        # Strip site chrome (nav menus, header, footer) before extracting text — this
-        # is boilerplate that repeats verbatim across every page of a paginated venue
-        # (see Numbers onboarding, 2026-07-23), diluting the real event content with
-        # noise and, in one confirmed case, causing the LLM to under-extract events
-        # from later pages once combined. Doesn't affect the raw `html` return value
-        # used by custom parsers (parse_white_oak_html, parse_seetickets_html, etc.)
-        # or pagination's next-page-link detection — those re-parse the untouched HTML.
-        for tag in soup(['script', 'style', 'header', 'nav', 'footer']):
-            tag.decompose()
-
-        # Inline each link's URL into its own anchor text (not a separate list at the
-        # end) so the LLM sees it next to the right event instead of having to count
-        # positions across two lists.
-        for a in soup.find_all('a', href=True):
-            href = a['href'].strip()
-            if not href or href.startswith('#') or href.startswith('mailto:'):
-                continue
-            href = urljoin(url, href)
-            label = a.get_text(strip=True)
-            a.string = f"{label} [{href}]" if label else f"[{href}]"
-
-        page_text = soup.get_text(separator='\n', strip=True)
+        page_text = html_to_text(html, url, drop_hidden=trim_hidden_text, dedupe=trim_duplicate_text)
 
         print(f"Extracted {len(page_text)} characters")
         print(f"HTML length: {len(html)} characters")  # Show raw HTML size
@@ -1026,6 +1011,45 @@ def scrape_page(url, wait_time=3, debug=False, scroll_count=1, load_more_id=None
 
     finally:
         _shutdown_driver(driver, service)
+
+
+def trim_options(venue):
+    """Per-venue page trimming for LLM venues: repeated text on by default, hidden elements off
+    (dropping them lost dates at Punch Line and Doc's in the 2026-11-16 comparison)."""
+    return {'trim_duplicate_text': venue.get('trim_duplicate_text', True),
+            'trim_hidden_text': venue.get('trim_hidden_text', False)}
+
+
+def html_to_text(html, url, drop_hidden=False, dedupe=False):
+    """Page HTML to the plain text the LLM reads; the two flags are page_trim's steps."""
+    soup = BeautifulSoup(html, 'html.parser')
+    # Strip site chrome (nav menus, header, footer) before extracting text — this
+    # is boilerplate that repeats verbatim across every page of a paginated venue
+    # (see Numbers onboarding, 2026-07-23), diluting the real event content with
+    # noise and, in one confirmed case, causing the LLM to under-extract events
+    # from later pages once combined. Doesn't affect the raw `html` return value
+    # used by custom parsers (parse_white_oak_html, parse_seetickets_html, etc.)
+    # or pagination's next-page-link detection — those re-parse the untouched HTML.
+    for tag in soup(['script', 'style', 'header', 'nav', 'footer']):
+        tag.decompose()
+    if drop_hidden:
+        page_trim.drop_hidden(soup)
+
+    # Inline each link's URL into its own anchor text (not a separate list at the
+    # end) so the LLM sees it next to the right event instead of having to count
+    # positions across two lists.
+    for a in soup.find_all('a', href=True):
+        href = a['href'].strip()
+        if not href or href.startswith('#') or href.startswith('mailto:'):
+            continue
+        href = urljoin(url, href)
+        label = a.get_text(strip=True)
+        a.string = f"{label} [{href}]" if label else f"[{href}]"
+
+    page_text = soup.get_text(separator='\n', strip=True)
+    if dedupe:
+        page_text = page_trim.remove_repeats(page_text)
+    return page_text
 
 
 PAGE_LOAD_TIMEOUT = 60
@@ -2026,7 +2050,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
                     wait_time=venue.get('wait_time', 3),
                     debug=debug,
                     scroll_count=scroll_count,
-                    load_more_id=venue.get('load_more_id')
+                    load_more_id=venue.get('load_more_id'),
+                    **trim_options(venue)
                 )
                 combined_text += '\n' + page_text
                 total_pages_fetched += 1
@@ -2051,7 +2076,8 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             debug=debug,
             scroll_count=scroll_count,
             load_more_id=venue.get('load_more_id'),
-            pagination_sentinel=venue.get('pagination_sentinel')
+            pagination_sentinel=venue.get('pagination_sentinel'),
+            **trim_options(venue)
         )
 
     # Hash check — skip LLM if content unchanged (not for onboard mode)
