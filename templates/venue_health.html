@@ -260,11 +260,12 @@
                 <th data-col="link_changes_30d" class="num-col" data-dir="desc" title="Saved events whose ticket or event link changed or was filled in by a later scrape, last 30 days">Link Changes (30d)</th>
                 <th data-col="date_corrections_30d" class="num-col" data-dir="desc" title="Times an already-saved event's date was corrected in place by a later scrape — a recurring count here signals unstable date extraction for that venue, not shows genuinely moving">Date Fixes (30d)</th>
                 <th data-col="days_since" data-dir="asc">Last Scraped</th>
-                <th data-col="rejection_rate" class="num-col" data-dir="desc" title="Rejected / (Approved + Rejected). Blank until at least 10 reviewed events exist — too few to trust a percentage.">Rejected %</th>
-                <th data-col="dupe_rate" class="num-col" data-dir="desc" title="Possible-duplicate / all non-canceled events ever produced. Blank until at least 10 events exist.">Dupe %</th>
-                <th data-col="date_correction_rate" class="num-col" data-dir="desc" title="Date corrections / total scraped, last 30 days. Blank until at least 10 scraped in that window.">Date Fix %</th>
-                <th data-col="content_change_rate" class="num-col" data-dir="desc" title="Title changes on an already-saved event / total scraped, last 30 days. Blank until at least 10 scraped in that window.">Content %</th>
-                <th data-col="auto_approve_status" data-dir="asc" title="Eligible: all four rates below threshold (3% / 3% / 10% / 10%) and not stale. Insufficient data: not enough reviewed/scraped volume yet to trust the rates.">Auto-Approve</th>
+                <th data-col="rejection_rate" class="num-col" data-dir="desc" title="Rejected / (Approved + Rejected) among events first seen in the last 30 days. Blank when there are none.">Rejected %</th>
+                <th data-col="dupe_rate" class="num-col" data-dir="desc" title="Possible-duplicate / all non-canceled events ever produced. Blank when there are none.">Dupe %</th>
+                <th data-col="date_correction_rate" class="num-col" data-dir="desc" title="Date corrections / total scraped, last 30 days. Blank when nothing was scraped in that window.">Date Fix %</th>
+                <th data-col="content_change_rate" class="num-col" data-dir="desc" title="Title changes on an already-saved event / total scraped, last 30 days. Blank when nothing was scraped in that window.">Content %</th>
+                <th data-col="cancel_rate" class="num-col" data-dir="desc" title="Cancellations in the last 30 days / (active upcoming events + those cancellations). Blank when there is nothing to measure.">Cancel %</th>
+                <th data-col="auto_approve_status" data-dir="asc" title="Eligible: rejected &lt; 3% (30d), duplicates &lt; 3%, date fixes &lt; 10%, content &lt; 10%, cancellations &lt; 10% (30d), no unstable read in 7 days, no leak pairs, scraped within 7 days. Hover a pill for what blocks it.">Auto-Approve</th>
             </tr>
         </thead>
         <tbody id="healthBody">
@@ -284,6 +285,7 @@
                 data-dupe_rate="{{ v.dupe_rate if v.dupe_rate is not none else '' }}"
                 data-date_correction_rate="{{ v.date_correction_rate if v.date_correction_rate is not none else '' }}"
                 data-content_change_rate="{{ v.content_change_rate if v.content_change_rate is not none else '' }}"
+                data-cancel_rate="{{ v.cancel_rate if v.cancel_rate is not none else '' }}"
                 data-auto_approve_status="{{ v.auto_approve_status }}">
                 <td>
                     <div class="badge-cell">
@@ -305,8 +307,9 @@
                 <td class="num-col">{% if v.dupe_rate is not none %}{{ v.dupe_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
                 <td class="num-col">{% if v.date_correction_rate is not none %}{{ v.date_correction_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
                 <td class="num-col">{% if v.content_change_rate is not none %}{{ v.content_change_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
+                <td class="num-col">{% if v.cancel_rate is not none %}{{ v.cancel_rate }}%{% else %}<span class="rate-na">—</span>{% endif %}</td>
                 <td>
-                    <span class="approve-pill {{ v.auto_approve_status }}">
+                    <span class="approve-pill {{ v.auto_approve_status }}" title="{{ v.auto_approve_blockers | join(' · ') }}">
                         {% if v.auto_approve_status == 'eligible' %}Eligible
                         {% elif v.auto_approve_status == 'not_eligible' %}Not eligible
                         {% else %}Insufficient data{% endif %}

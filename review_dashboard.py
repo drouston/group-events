@@ -182,7 +182,7 @@ def init_db():
         # just that column, so this has to be proactive rather than left to a try/except.
         for col in ('new_events', 'canceled_events', 'total_pending', 'scrape_mode',
                     'updated_events', 'date_corrections', 'content_changes', 'splits', 'error', 'leak_pairs',
-                    'link_changes'):
+                    'link_changes', 'unstable_reads'):
             default = "''" if col == 'scrape_mode' else ('NULL' if col in ('error', 'leak_pairs') else '0')
             coltype = 'TEXT' if col in ('scrape_mode', 'error') else 'INTEGER'
             c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} {coltype} DEFAULT {default}''')
@@ -280,6 +280,7 @@ def init_db():
             ('total_pending', 'INTEGER', '0'), ('scrape_mode', 'TEXT', "''"),
             ('updated_events', 'INTEGER', '0'), ('date_corrections', 'INTEGER', '0'),
             ('content_changes', 'INTEGER', '0'), ('splits', 'INTEGER', '0'), ('error', 'TEXT', 'NULL'), ('leak_pairs', 'INTEGER', 'NULL'), ('link_changes', 'INTEGER', '0'),
+            ('unstable_reads', 'INTEGER', '0'),
         ):
             if col not in existing_cols:
                 c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN {col} {coltype} DEFAULT {default}''')
@@ -1082,6 +1083,26 @@ try:
 except Exception:
     VENUE_KEY_TO_NAME = {}
 
+def _merge_scraper_venues(c_rows, pairs):
+    """One health row per single-venue scraper: venues it wrote under other names (Continental's
+    two rooms, renames) are summed into its config name, where its scrape_stats are logged.
+    City calendar feeds keep one row per venue."""
+    alias = {}
+    for venue, source in pairs:
+        cfg = _SCRAPER_VENUES.get(source) if VENUE_KEY_TO_NAME else None
+        if not cfg or venue == cfg['name'] or (cfg.get('ical_url') and not cfg.get('ics_single_venue')):
+            continue
+        alias[venue] = cfg['name']
+    merged = {}
+    for row in c_rows:
+        name = alias.get(row[0], row[0])
+        if name in merged:
+            merged[name] = [name] + [(a or 0) + (b or 0) for a, b in zip(merged[name][1:], row[1:])]
+        else:
+            merged[name] = [name] + list(row[1:])
+    return sorted(merged.values(), key=lambda r: -(r[1] or 0))
+
+
 @app.route('/venue_health')
 def venue_health():
     import traceback
@@ -1109,7 +1130,13 @@ def _venue_health_inner():
                 COUNT(*) FILTER (WHERE status = 'canceled') AS total_canceled,
                 COUNT(*) FILTER (WHERE status = 'approved') AS approved_total,
                 COUNT(*) FILTER (WHERE status = 'rejected') AS rejected_total,
-                COUNT(*) FILTER (WHERE status = 'possible_duplicate') AS possible_duplicate_total
+                COUNT(*) FILTER (WHERE status = 'possible_duplicate') AS possible_duplicate_total,
+                COUNT(*) FILTER (WHERE status IN ('approved', 'rejected') AND created_at IS NOT NULL AND created_at != ''
+                    AND created_at::timestamp >= NOW() - INTERVAL '30 days') AS reviewed_30d,
+                COUNT(*) FILTER (WHERE status = 'rejected' AND created_at IS NOT NULL AND created_at != ''
+                    AND created_at::timestamp >= NOW() - INTERVAL '30 days') AS rejected_30d,
+                COUNT(*) FILTER (WHERE status IN ('approved', 'pending', 'possible_duplicate')
+                    AND start_date::date >= CURRENT_DATE) AS active_upcoming
             FROM events
             WHERE venue IS NOT NULL
             GROUP BY venue
@@ -1150,7 +1177,8 @@ def _venue_health_inner():
         try:
             c.execute('''
                 SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
-                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0)
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0),
+                    COALESCE(SUM(canceled_events),0)
                 FROM scrape_stats
                 WHERE scrape_date >= (CURRENT_DATE - INTERVAL '30 days')::text
                 GROUP BY venue
@@ -1168,10 +1196,13 @@ def _venue_health_inner():
                 SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS total_canceled,
                 SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) AS approved_total,
                 SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) AS rejected_total,
-                SUM(CASE WHEN status='possible_duplicate' THEN 1 ELSE 0 END) AS possible_duplicate_total
+                SUM(CASE WHEN status='possible_duplicate' THEN 1 ELSE 0 END) AS possible_duplicate_total,
+                SUM(CASE WHEN status IN ('approved','rejected') AND created_at >= date('now','-30 days') THEN 1 ELSE 0 END) AS reviewed_30d,
+                SUM(CASE WHEN status='rejected' AND created_at >= date('now','-30 days') THEN 1 ELSE 0 END) AS rejected_30d,
+                SUM(CASE WHEN status IN ('approved','pending','possible_duplicate') AND start_date >= ? THEN 1 ELSE 0 END) AS active_upcoming
             FROM events WHERE venue IS NOT NULL
             GROUP BY venue ORDER BY upcoming DESC
-        ''', (today,))
+        ''', (today, today))
         venue_rows = c.fetchall()
 
         try:
@@ -1204,7 +1235,8 @@ def _venue_health_inner():
         try:
             c.execute('''
                 SELECT venue, COALESCE(SUM(updated_events),0), COALESCE(SUM(date_corrections),0),
-                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0)
+                    COALESCE(SUM(total_scraped),0), COALESCE(SUM(content_changes),0), COALESCE(SUM(link_changes),0),
+                    COALESCE(SUM(canceled_events),0)
                 FROM scrape_stats
                 WHERE scrape_date >= date('now','-30 days')
                 GROUP BY venue
@@ -1212,6 +1244,14 @@ def _venue_health_inner():
             update_rows = c.fetchall()
         except Exception:
             update_rows = []
+
+    venue_sources = []
+    try:
+        c.execute("SELECT DISTINCT venue, source FROM events WHERE source IS NOT NULL AND venue IS NOT NULL")
+        venue_sources = c.fetchall()
+    except Exception:
+        if DATABASE_URL:
+            conn.rollback()
 
     # Latest weekly leak-monitor count: unlinked same-day duplicates the scorer finds.
     venue_to_leaks = {}
@@ -1222,15 +1262,27 @@ def _venue_health_inner():
         if DATABASE_URL:
             conn.rollback()
 
-    # Failed runs and LLM content splits from the last 7 days.
+    # Last successful run per venue. venue_cache only covers the LLM path, so parser, API and
+    # feed venues also need their scrape_stats rows to not read as stale.
+    venue_to_last_run = {}
+    try:
+        c.execute("SELECT venue, MAX(scrape_date) FROM scrape_stats WHERE error IS NULL "
+                  "AND scrape_mode != 'leak_monitor' GROUP BY venue")
+        venue_to_last_run = dict(c.fetchall())
+    except Exception:
+        if DATABASE_URL:
+            conn.rollback()
+
+    # Failed runs, LLM content splits and unstable reads from the last 7 days.
     venue_to_errors = {}
     try:
         week_ago = (datetime.now(CENTRAL).date() - timedelta(days=7)).isoformat()
-        c.execute(f"SELECT venue, error, COALESCE(splits, 0) FROM scrape_stats WHERE scrape_date >= {'%s' if DATABASE_URL else '?'} ORDER BY id",
+        c.execute(f"SELECT venue, error, COALESCE(splits, 0), COALESCE(unstable_reads, 0) FROM scrape_stats WHERE scrape_date >= {'%s' if DATABASE_URL else '?'} ORDER BY id",
                   (week_ago,))
-        for venue, err, splits in c.fetchall():
-            e = venue_to_errors.setdefault(venue, {'errors_7d': 0, 'last_error': None, 'splits_7d': 0})
+        for venue, err, splits, unstable in c.fetchall():
+            e = venue_to_errors.setdefault(venue, {'errors_7d': 0, 'last_error': None, 'splits_7d': 0, 'unstable_7d': 0})
             e['splits_7d'] += splits
+            e['unstable_7d'] += unstable
             if err:
                 e['errors_7d'] += 1
                 e['last_error'] = err
@@ -1241,35 +1293,37 @@ def _venue_health_inner():
     conn.close()
 
     key_to_scraped = {r[0]: r[1] for r in cache_rows}
-    venue_to_updates = {r[0]: (r[1], r[2], r[3], r[4], r[5]) for r in update_rows}
+    venue_to_updates = {r[0]: tuple(r[1:7]) for r in update_rows}
     name_to_key = {v: k for k, v in VENUE_KEY_TO_NAME.items()}
     now_dt = datetime.now(CENTRAL)
 
-    # Auto-approve eligibility thresholds. Rates below are only trusted once the venue has
-    # enough reviewed/scraped volume for a percentage to mean anything — MIN_SAMPLE guards
-    # against e.g. 1 rejection out of 2 events reading as a disqualifying 50%.
-    MIN_SAMPLE = 10
+    # Auto-approve eligibility thresholds. No minimum sample: small venues (Echoes) qualify on
+    # whatever volume they have, and a rate with nothing to measure doesn't block.
     REJECTION_RATE_MAX = 3
     DUPLICATE_RATE_MAX = 3
     DATE_CORRECTION_RATE_MAX = 10
     CONTENT_CHANGE_RATE_MAX = 10
-    STALE_DAYS_MAX = 3
+    CANCEL_RATE_MAX = 10
+    STALE_DAYS_MAX = 7
 
     venues = []
     cols = ['venue','upcoming','pending','canceled_30d','new_7d','total_canceled',
-            'approved_total','rejected_total','possible_duplicate_total']
-    for row in venue_rows:
+            'approved_total','rejected_total','possible_duplicate_total','reviewed_30d','rejected_30d',
+            'active_upcoming']
+    for row in _merge_scraper_venues(c_rows=venue_rows, pairs=venue_sources):
         d = dict(zip(cols, row))
         key = name_to_key.get(d['venue'])
-        last_scraped_raw = key_to_scraped.get(key) if key else None
-        updated_30d, date_corrections_30d, total_scraped_30d, content_changes_30d, link_changes_30d = \
-            venue_to_updates.get(d['venue'], (0, 0, 0, 0, 0))
+        last_scraped_raw = max(filter(None, (key_to_scraped.get(key) if key else None,
+                                             venue_to_last_run.get(VENUE_KEY_TO_NAME.get(key)) if key else None)),
+                               default=None)
+        updated_30d, date_corrections_30d, total_scraped_30d, content_changes_30d, link_changes_30d, cancels_30d = \
+            venue_to_updates.get(d['venue'], (0, 0, 0, 0, 0, 0))
         d['updated_30d'] = updated_30d
         d['date_corrections_30d'] = date_corrections_30d
         d['total_scraped_30d'] = total_scraped_30d
         d['content_changes_30d'] = content_changes_30d
         d['link_changes_30d'] = link_changes_30d
-        d.update(venue_to_errors.get(d['venue'], {'errors_7d': 0, 'last_error': None, 'splits_7d': 0}))
+        d.update(venue_to_errors.get(d['venue'], {'errors_7d': 0, 'last_error': None, 'splits_7d': 0, 'unstable_7d': 0}))
         d['leak_pairs'] = venue_to_leaks.get(d['venue'])
 
         days_since = None
@@ -1303,28 +1357,36 @@ def _venue_health_inner():
         # reviewed-outcome-based (rejection) or volume-based (duplicate/date/content), and
         # None (not a numeric rate) means "not enough history to trust a percentage yet,"
         # distinct from a rate that's measured and simply too high.
-        total_reviewed = d['approved_total'] + d['rejected_total']
+        # Rejections over events first seen in the last 30 days; cancellations (from scrape runs) over
+        # the venue's active upcoming events plus those cancellations.
         total_volume = d['approved_total'] + d['rejected_total'] + d['pending']  # pending already includes possible_duplicate
-        rejection_rate = round(d['rejected_total'] / total_reviewed * 100, 1) if total_reviewed >= MIN_SAMPLE else None
-        dupe_rate = round(d['possible_duplicate_total'] / total_volume * 100, 1) if total_volume >= MIN_SAMPLE else None
-        date_correction_rate = round(date_corrections_30d / total_scraped_30d * 100, 1) if total_scraped_30d >= MIN_SAMPLE else None
-        content_change_rate = round(content_changes_30d / total_scraped_30d * 100, 1) if total_scraped_30d >= MIN_SAMPLE else None
+        cancel_base = d['active_upcoming'] + cancels_30d
+        rejection_rate = round(d['rejected_30d'] / d['reviewed_30d'] * 100, 1) if d['reviewed_30d'] else None
+        dupe_rate = round(d['possible_duplicate_total'] / total_volume * 100, 1) if total_volume else None
+        date_correction_rate = round(date_corrections_30d / total_scraped_30d * 100, 1) if total_scraped_30d else None
+        content_change_rate = round(content_changes_30d / total_scraped_30d * 100, 1) if total_scraped_30d else None
+        cancel_rate = round(cancels_30d / cancel_base * 100, 1) if cancel_base else None
         is_stale = days_since is None or days_since > STALE_DAYS_MAX
 
         d['rejection_rate'] = rejection_rate
         d['dupe_rate'] = dupe_rate
         d['date_correction_rate'] = date_correction_rate
         d['content_change_rate'] = content_change_rate
+        d['cancel_rate'] = cancel_rate
+        d['cancels_30d'] = cancels_30d
 
-        rates = [rejection_rate, dupe_rate, date_correction_rate, content_change_rate]
-        if any(r is None for r in rates):
-            auto_approve_status = 'insufficient_data'
-        elif (rejection_rate < REJECTION_RATE_MAX and dupe_rate < DUPLICATE_RATE_MAX
-                and date_correction_rate < DATE_CORRECTION_RATE_MAX
-                and content_change_rate < CONTENT_CHANGE_RATE_MAX and not is_stale):
-            auto_approve_status = 'eligible'
-        else:
-            auto_approve_status = 'not_eligible'
+        blockers = [label for label, failed in (
+            (f'rejected {rejection_rate}%', rejection_rate is not None and rejection_rate >= REJECTION_RATE_MAX),
+            (f'duplicates {dupe_rate}%', dupe_rate is not None and dupe_rate >= DUPLICATE_RATE_MAX),
+            (f'date fixes {date_correction_rate}%', date_correction_rate is not None and date_correction_rate >= DATE_CORRECTION_RATE_MAX),
+            (f'content changes {content_change_rate}%', content_change_rate is not None and content_change_rate >= CONTENT_CHANGE_RATE_MAX),
+            (f'cancellations {cancel_rate}%', cancel_rate is not None and cancel_rate >= CANCEL_RATE_MAX),
+            (f"{d['unstable_7d']} unstable read(s) in 7d", d['unstable_7d'] > 0),
+            (f"{d['leak_pairs']} leak pair(s)", bool(d['leak_pairs'])),
+            ('stale', is_stale),
+        ) if failed]
+        auto_approve_status = 'not_eligible' if blockers else 'eligible'
+        d['auto_approve_blockers'] = blockers
         d['auto_approve_status'] = auto_approve_status
         d['currently_auto_approve'] = bool(_SCRAPER_VENUES.get(key, {}).get('auto_approve')) if key else False
 

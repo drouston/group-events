@@ -93,6 +93,7 @@ VENUES = {
         "dupe_use_start_date": False
     },
     "white_oak": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "White Oak Music Hall",
         "url": "https://whiteoakmusichall.com",
         "city": "Houston",
@@ -137,6 +138,7 @@ VENUES = {
         "wait_time": 5
     },
     "713_music_hall": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "713 Music Hall",
         "url": "https://www.713musichall.com/shows",
         "city": "Houston",
@@ -151,6 +153,7 @@ VENUES = {
         "url": "https://www.continentalclub.com/houston",
     },
     "woodland_pavilion": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Cynthia Woods Mitchell Pavilion",
         "aliases": ["Woodlands Pavilion", "The Woodlands Pavilion"],
         "url": "https://www.woodlandscenter.org/events",
@@ -229,6 +232,7 @@ VENUES = {
         "scroll_count": 5
     },
     "improv_tx": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Improv Houston",
         "url": "https://improvtx.com/calendar/houston/-/",
         "venue_url": "https://improvtx.com/houston/calendar/",
@@ -258,6 +262,7 @@ VENUES = {
         "multi_show": True,
     },
     "axelrad": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Axelrad Beer Garden",
         "url": "https://www.axelradhouston.com/music",
         "city": "Houston",
@@ -288,6 +293,7 @@ VENUES = {
         # anchor-text pairing.
     },
     "nrg_park": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         # Renamed 2026-10-01: NRG's naming-rights deal lapsed and the complex reverted to its
         # earlier Reliant branding — confirmed live, not a rumor: nrgpark.com's own event pages
         # already redirect to reliantpark.com, and the old site is being kept up only as a
@@ -341,7 +347,7 @@ VENUES = {
         "state": "TX",
         "event_type": "comedy",
         "venue_instruction": "Extract all comedy shows. This is a comedy club.",
-        "scrolls": 5,
+        "scroll_count": 5,
         # Added 2026-08-19: event_url is always the same generic /shows listing page (never
         # per-event) — same class of bug as Miller Outdoor Theatre's ticket_url, and it made
         # detect_url_date_conflicts() flag nearly every event here as a date-drift duplicate
@@ -401,6 +407,7 @@ VENUES = {
         "multi_show": True,
     },
     "hotel_lucine": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Hotel Lucine",
         "url": "https://www.hotellucine.com/events-calendar/list",
         "city": "Galveston",
@@ -420,6 +427,7 @@ VENUES = {
         "auto_approve": True,
     },
     "scout_bar": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Scout Bar",
         "url": "https://scoutbar.com/calendar/",
         "city": "Houston",
@@ -429,6 +437,7 @@ VENUES = {
         "seetickets": True,
     },
     "armadillo_palace": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Goode Company Armadillo Palace",
         "aliases": ["Armadillo Palace"],
         "url": "https://thearmadillopalace.com/live-music/",
@@ -438,6 +447,7 @@ VENUES = {
         "scroll_count": 3,
     },
     "moth": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "MOTH Presents",
         "aliases": ["Moth", "Moth HTX"],
         "url": "https://www.mothpresents.com/tickets",
@@ -447,6 +457,7 @@ VENUES = {
         "scroll_count": 3,
     },
     "numbers": {
+        "auto_approve": True,  # eligible on venue health 2026-11-17
         "name": "Numbers",
         "aliases": ["Numbers Nightclub"],
         "url": "https://numbersnightclub.com/events/month/",
@@ -1631,6 +1642,8 @@ Return ONLY valid JSON with an "events" array."""
 SPLIT_SHIFT_CHARS = 1500
 # Splits per venue name in this run, recorded in scrape_stats.
 SPLIT_COUNTS = {}
+# Cancellation checks skipped for missing too many rows (a partial read), per venue config name.
+UNSTABLE_READS = {}
 
 def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
     """Extract events using LLM from text or HTML.
@@ -2717,6 +2730,8 @@ def cancel_unified(c, ph, events, shadow):
         if len(missing) > cap:
             print(f"  ⚠ {len(missing)} events missing at once for {venue} (cap {cap} of {len(active)}) — "
                   f"treating as an unreliable scrape and skipping cancellation")
+            config_name = VENUES[venue_key]['name']
+            UNSTABLE_READS[config_name] = UNSTABLE_READS.get(config_name, 0) + 1
             continue
         for r in active:
             if r['id'] not in missing:
@@ -3102,6 +3117,7 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS link_changes INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS splits INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS error TEXT''')
+    c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS unstable_reads INTEGER DEFAULT 0''')
 
     # Get current totals
     c.execute(f'''SELECT
@@ -3114,8 +3130,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
          new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections,
-         content_changes, splits, error, link_changes)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         content_changes, splits, error, link_changes, unstable_reads)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
@@ -3128,7 +3144,8 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
          stats.get('content_changes', 0),
          SPLIT_COUNTS.pop(venue_name, 0),
          error[:1000] if error else None,
-         stats.get('link_changes', 0)))
+         stats.get('link_changes', 0),
+         UNSTABLE_READS.pop(venue_name, 0)))
     conn.commit()
     conn.close()
 

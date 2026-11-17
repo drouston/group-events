@@ -1,4 +1,4 @@
-"""Compare LLM extraction on the untrimmed page text vs page_trim variants. Writes nothing to the DB.
+"""Compare LLM extraction on production page text vs page_trim/window variants. Writes nothing to the DB.
 
   python compare_trim.py --measure [venue ...]   # page sizes only, no LLM (all LLM venues if none given)
   python compare_trim.py venue [venue ...]       # extract both versions --runs times each and compare
@@ -132,9 +132,10 @@ def short(e):
     return f"{e.get('start_date')} {e.get('start_time') or '--:--'} {(e.get('name') or '')[:50]}"
 
 
-# name: (desktop window + hidden marks, drop hidden, remove repeats). 'base' is untrimmed.
-VARIANTS = {'base': (False, False, False), 'trim': (True, True, True),
-            'dedupe': (False, False, True), 'wide': (True, False, False)}
+# name: (desktop window + hidden marks, drop hidden, remove repeats). 'base' is production (756px,
+# duplicate text trimmed); 'raw' is untrimmed.
+VARIANTS = {'base': (False, False, True), 'raw': (False, False, False), 'trim': (True, True, True),
+            'wide': (True, False, True)}
 
 
 def compare(key, runs, variants):
