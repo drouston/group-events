@@ -156,6 +156,10 @@ def url_score(listing, cand, ctx):
     theirs = usable_links(cand, ctx['profile'])
     if mine & theirs:
         return 20
+    # Different per-show (key) links are strong evidence of different shows. Approved 2026-11-18.
+    keys_mine = usable_links(listing, ctx['profile'], levels=('key',), batch_ignored=ctx['batch_ignored'])
+    if keys_mine and usable_links(cand, ctx['profile'], levels=('key',)):
+        return -20
     # Both linked but no link in common: a tie-breaker that tips an exact 75 into review
     # (a different show in the same slot and room). Approved 2026-11-09.
     return -1 if mine and theirs else 0

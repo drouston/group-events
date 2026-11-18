@@ -84,16 +84,18 @@ def test_review_links_and_cancellation_two_misses():
     keep = add(c, 'Jane Doe', D1, '20:00', link='https://t/1')
     gone = add(c, 'Gone Act', D2, '20:00', link='https://t/9')
     filler = [add(c, f'Filler Band {chr(65+i)}', D2, f'1{i}:00', link=f'https://t/f{i}') for i in range(8)]
-    # Jane Doe is no longer listed; a different act took her slot (a takeover): review, linked.
+    # Jane Doe is no longer listed; a different act with its own key link took her slot: a new show.
     evs = [listing(f'Filler Band {chr(65+i)}', D2, f'1{i}:00', f'https://t/f{i}') for i in range(8)] + \
           [listing('John Roe', D1, '20:00', 'https://t/x')]
     decisions, stats, canceled = run(c, evs)
-    assert decisions[-1]['decision'] == 'review' and stats['flagged'] == 1, decisions[-1]
+    assert decisions[-1]['decision'] == 'insert', decisions[-1]
     c.execute("SELECT duplicate_of_id, review_status FROM events WHERE name = 'John Roe'")
-    assert c.fetchone() == (keep, 'pending')
+    assert c.fetchone() == (None, 'pending')
+    assert get(c, keep)[5] is not None and get(c, keep)[4] == 'scheduled'   # replaced row: first miss
     assert get(c, gone)[5] is not None and get(c, gone)[4] == 'scheduled'   # first miss: flagged only
     decisions, stats, canceled = run(c, evs[:-1])
-    assert canceled == 1 and get(c, gone)[4] == 'canceled', get(c, gone)    # second miss: canceled
+    assert canceled == 2 and get(c, gone)[4] == 'canceled', get(c, gone)    # second miss: canceled
+    assert get(c, keep)[4] == 'canceled'
 
 
 def test_canceled_row_reactivates():

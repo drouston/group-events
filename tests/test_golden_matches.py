@@ -94,6 +94,18 @@ CASES = [
     ('Canceled row matched again is updated (reactivated)',
      listing('Jane Doe', '2026-12-01', '20:00'),
      [dict(row(1, 'Jane Doe', '2026-12-01', '20:00'), event_status='canceled')], SINGLE, 'update', 1),
+    # Key-link mismatch scores -20 (2026-11-18, Secret Group leak pairs)
+    ('Different untimed shows with different key links stay separate',
+     listing('NIGHT COURT: Monday Open Mic Comedy', '2026-12-07', ticket_url='https://t/2'),
+     [row(1, 'MONDAY NIGHT COMEDY!', '2026-12-07', ticket_url='https://t/1'),
+      row(2, 'Karaoke', '2026-12-07', ticket_url='https://t/3')], dict(KEYED, multi_show=True), 'insert', None),
+    ('Relisted timed show with a new key link still updates',
+     listing('Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/new'),
+     [row(1, 'Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/old')], KEYED, 'update', 1),
+    ('Relisted untimed show with a new key link goes to review, never a new row',
+     listing('Jane Doe', '2026-12-01', ticket_url='https://t/new'),
+     [row(1, 'Jane Doe', '2026-12-01', ticket_url='https://t/old'),
+      row(2, 'John Roe', '2026-12-01', ticket_url='https://t/3')], KEYED, 'review', 1),
 ]
 
 
