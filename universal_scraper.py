@@ -1645,26 +1645,9 @@ SPLIT_COUNTS = {}
 # Cancellation checks skipped for missing too many rows (a partial read), per venue config name.
 UNSTABLE_READS = {}
 
-def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0):
-    """Extract events using LLM from text or HTML.
-
-    venue/city/state are deliberately NOT part of the extraction schema — we already
-    know them from config with certainty, so asking the LLM to echo them back only
-    wastes output tokens and risks it drifting on the exact string (dangerous, since
-    save_to_database does exact-string venue matching everywhere). They're set in code
-    after extraction instead, the same way venue_url already is.
-
-    Splits and retries on JSON truncation (a high event count can exceed the model's
-    output token cap) rather than failing the whole venue outright. _depth guards
-    against infinite recursion if a chunk keeps failing for an unrelated reason.
-    """
-    venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else ""
-    # Trimmed 2026-11-03: the longer prompt (title-cleanup rules, date_changed, per-field
-    # confidence) turned one misread date into a cascade at Arena Theatre.
-    system_prompt = f"""You are an expert at extracting structured event data from venue websites. The name of this venue is "{venue_name}", and it's website is "{venue_url}". Today's date is {datetime.now().strftime('%Y-%m-%d')}. Don't apply any timezone conversion.
-
-Fields to extract:
-- name: Event name which may include music headliners, opening acts, etc. 
+# Extraction prompt tiers, set per venue with "prompt_tier" (default full). Output is sensitive to
+# the exact prompt text, down to whitespace (Arena, 2026-11-18): re-test with prompt_lab.py after edits.
+FULL_FIELDS = """- name: Event name which may include music headliners, opening acts, etc. 
 - start_date: YYYY-MM-DD format
 - end_date: YYYY-MM-DD format 
 - doors_time: HH:MM format (24-hour) or null
@@ -1679,8 +1662,56 @@ Fields to extract:
 - event_type: Classify as one of: 'music', 'comedy', 'open_mic', 'happy_hour', 'performing_arts', 'arts', 'sports', 'civic', 'private_event', or 'other'. Use 'music' as default if unclear.
 - sold_out: true if event is sold out, false otherwise
 - openers: Comma-separated list of opening acts if mentioned, otherwise null
-{venue_note}
+"""
+PROMPT_FIELDS = {
+    'minimal': """- name
+- start_date
+- event_url
+""",
+    # The fields event_matching scores on.
+    'scoring': """- name
+- start_date
+- start_time: HH:MM format (24-hour) or null
+- doors_time: HH:MM format (24-hour) or null
+- ticket_url
+- event_url
+- location: room or stage within the venue, or null
+""",
+}
+
+def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0, prompt_tier='full'):
+    """Extract events using LLM from text or HTML.
+
+    venue/city/state are deliberately NOT part of the extraction schema — we already
+    know them from config with certainty, so asking the LLM to echo them back only
+    wastes output tokens and risks it drifting on the exact string (dangerous, since
+    save_to_database does exact-string venue matching everywhere). They're set in code
+    after extraction instead, the same way venue_url already is.
+
+    Splits and retries on JSON truncation (a high event count can exceed the model's
+    output token cap) rather than failing the whole venue outright. _depth guards
+    against infinite recursion if a chunk keeps failing for an unrelated reason.
+    """
+    venue_note = f"\n\nVENUE NOTE: {venue_instruction}" if venue_instruction else ""
+    intro = (f'You are an expert at extracting structured event data from venue websites. The name of this venue is '
+             f'"{venue_name}", and it\'s website is "{venue_url}". Today\'s date is {datetime.now().strftime("%Y-%m-%d")}.')
+    if prompt_tier == 'full':
+        # Trimmed 2026-11-03: the longer prompt (title-cleanup rules, date_changed, per-field
+        # confidence) turned one misread date into a cascade at Arena Theatre.
+        intro += " Don't apply any timezone conversion."
+    system_prompt = f"""{intro}
+
+Fields to extract:
+{PROMPT_FIELDS.get(prompt_tier) or FULL_FIELDS}{venue_note}
 {"If parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""}
+Return ONLY valid JSON with an "events" array containing ALL events found."""
+    if prompt_tier != 'full':
+        # No blank placeholder lines: exact layout as tested (Arena flips on one blank line).
+        html_hint = "\nIf parsing HTML, look in div classes, data attributes, and any structured elements containing event information." if is_html else ""
+        system_prompt = f"""{intro}
+
+Fields to extract:
+{PROMPT_FIELDS[prompt_tier]}{venue_note}{html_hint}
 Return ONLY valid JSON with an "events" array containing ALL events found."""
     user_prompt = f"Extract all events:\n\n{content}"
     try:
@@ -1696,8 +1727,8 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
         split_at = content.rfind('\n', 0, target)
         if split_at <= 0:
             split_at = target
-        result_a = extract_events_with_llm_raw(content[:split_at], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
-        result_b = extract_events_with_llm_raw(content[split_at:], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1)
+        result_a = extract_events_with_llm_raw(content[:split_at], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1, prompt_tier)
+        result_b = extract_events_with_llm_raw(content[split_at:], venue_name, venue_url, is_html, venue_instruction, llm, _depth + 1, prompt_tier)
         # The event on each side of the cut may be a partial read, so drop both; the shifted
         # cut on a later run captures them whole.
         events_a = result_a.get('events', [])[:-1]
@@ -2126,11 +2157,14 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
             venue_url=venue.get('venue_url') or venue.get('url', ''),
             is_html=False,
             venue_instruction=venue_instruction,
-            llm=llm
+            llm=llm,
+            prompt_tier=venue.get('prompt_tier', 'full')
         )
 
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
+    if venue.get('prompt_tier', 'full') != 'full':
+        classify_event_types(events)  # the smaller prompts don't ask for event_type
 
     # Toyota Center's ticket_url can't be trusted from the LLM extraction at all (see
     # get_toyota_carousel_tickets) — rebuilt here directly from the carousel instead, once
