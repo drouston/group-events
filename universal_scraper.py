@@ -508,6 +508,7 @@ VENUES = {
         "state": "TX",
         "wait_time": 5,
         "scroll_count": 3,
+        "prompt_tier": "minimal",  # dates only in link codes; see CLAUDE.md Arena resolution
     },
     "dosey_doe": {
         "name": "Dosey Doe - The Big Barn",
