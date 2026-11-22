@@ -521,8 +521,9 @@ VENUES = {
     },
     "den_comedy": {
         "name": "The Den Comedy Club",
-        # Inside Wolfsmiths; tickets are sold as Squarespace store items, one per show.
-        "url": "https://www.thedencomedyclub.com/tickets",
+        # Inside Wolfsmiths; tickets are Shopify store items, one per show (Squarespace /tickets
+        # 404s since the store moved, 2026-11).
+        "url": "https://thedencomedyclub.com/collections/tickets",
         "venue_url": "https://www.thedencomedyclub.com/",
         "city": "Houston",
         "state": "TX",

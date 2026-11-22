@@ -497,11 +497,11 @@ def delete_published():
     conn = get_db_connection()
     c = conn.cursor()
     
-    if DATABASE_URL:
-        c.execute('DELETE FROM events WHERE id = %s', (event_id,))
-    else:
-        c.execute('DELETE FROM events WHERE id = ?', (event_id,))
-    
+    ph = '%s' if DATABASE_URL else '?'
+    # Rows marked as its possible duplicates would otherwise point at nothing.
+    c.execute(f'UPDATE events SET duplicate_of_id = NULL WHERE duplicate_of_id = {ph}', (event_id,))
+    c.execute(f'DELETE FROM events WHERE id = {ph}', (event_id,))
+
     conn.commit()
     conn.close()
     
