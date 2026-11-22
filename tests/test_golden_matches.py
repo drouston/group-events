@@ -160,7 +160,9 @@ def test_recurring_series_inherited_at_insert():
     assert decisions[0]['decision'] == 'insert' and decisions[0]['recurring'] == 'yes', decisions
 
 
-def test_key_match_does_not_leave_stored_copies_missing():
+def test_runner_up_is_not_seen():
+    """Only claimed rows count as seen (2026-11-19): an unclaimed stored copy or a stale show
+    sharing the slot gets a miss, however well it scored."""
     from datetime import date
     rows = [row(1, 'Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/123'),
             row(2, 'Jane Doe', '2026-12-01', '20:00')]          # an older stored copy
@@ -168,7 +170,16 @@ def test_key_match_does_not_leave_stored_copies_missing():
         [listing('Jane Doe', '2026-12-01', '20:00', ticket_url='https://t/123')], {V: rows}, {'v': KEYED},
         today=date(2026, 11, 1))
     assert decisions[0]['target_id'] == 1
-    assert em.missing_rows(rows, claimed, best, set()) == [], (claimed, best)
+    assert em.missing_rows(rows, claimed, best, set()) == [2], (claimed, best)
+    rows = [row(1, 'Jazz Night', '2026-12-01', '20:30'), row(2, 'Nathan Quick', '2026-12-01', '20:30')]
+    decisions, claimed, best, _ = em.decide_batch(
+        [listing('Jazz Night', '2026-12-01', '20:30')], {V: rows}, {'v': MULTI}, today=date(2026, 11, 1))
+    assert best[2] >= em.REVIEW_AT and em.missing_rows(rows, claimed, best, set()) == [2], (claimed, best)
+    # Rows tied with the top match stay seen until the tie is reviewed.
+    rows = [row(1, 'Private Event', '2026-12-01'), row(2, 'Private Event', '2026-12-01')]
+    decisions, claimed, best, _ = em.decide_batch(
+        [listing('Private Event', '2026-12-01')], {V: rows}, {'v': SINGLE}, today=date(2026, 11, 1))
+    assert em.missing_rows(rows, claimed, best, set()) == [], (decisions, claimed, best)
 
 
 def test_rejected_only_show_stays_rejected():

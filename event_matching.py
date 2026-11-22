@@ -310,8 +310,8 @@ def _decide_venue(idxs, events, rows, profile, today):
             claimed[hit['id']] = i
             out[i].update(decision='reschedule', target_id=hit['id'], reason='source_key_date_change')
 
-    # Key-matched events are still scored against their block, decision unchanged, so other
-    # stored copies of the same show don't look missing to the cancellation check.
+    # Key-matched events are still scored against their block, decision unchanged, so
+    # postponement routing sees those rows as matched.
     for i, ev in evs.items():
         if out[i]['reason'] != 'source_key':
             continue
@@ -369,6 +369,8 @@ def _decide_venue(idxs, events, rows, profile, today):
         if others:
             d.update(runner_up_id=others[0][2]['id'], runner_up_score=others[0][0])
         tied = [x[2] for x in others if x[0] >= REVIEW_AT and abs(total - x[0]) < TIE_MARGIN]
+        for r in tied:
+            claimed.setdefault(r['id'], i)   # seen: unresolved until the tie is reviewed
         open_item = next((r for r in [target] + tied if _open_review_item(r)), None)
         if _rejected(target):
             if total >= UPDATE_AT:
@@ -490,11 +492,11 @@ def decide_batch(events, rows_by_venue, venue_configs, today=None):
 
 
 def missing_rows(active_rows, claimed, best_against, postponement_targets):
-    """Shadow cancellation: active future rows no batch event matched or scored 55+ against."""
+    """Cancellation: active future rows no batch event claimed. A runner-up score doesn't count
+    as seen (2026-11-19: a stale row sharing a slot with a live show never got a miss).
+    best_against is unused here; postponement routing still uses it."""
     return [r['id'] for r in active_rows
-            if r['id'] not in claimed
-            and best_against.get(r['id'], -999) < REVIEW_AT
-            and r['id'] not in postponement_targets]
+            if r['id'] not in claimed and r['id'] not in postponement_targets]
 
 
 # ---------- legacy comparison ----------
