@@ -322,7 +322,8 @@ Idea from the 2026-07-30 Heights Theater date-drift cleanup: some ticket platfor
 ### Continental Club / Big Top
 - Both venues share one Timely calendar URL
 - Bypasses the LLM entirely — `timely_calendar_id` in VENUES config routes this venue straight to `scrape_timely_api`, which hits Timely's API directly
-- Timely's own API response tags each event with a `taxonomy_venue` field, which `scrape_timely_api` reads directly to set `venue` per event (falls back to the VENUES config's `name` only if that taxonomy is missing) — the split is Timely's own structured data, not LLM inference
+- Timely's own API response tags each event with a `taxonomy_venue` field, which `scrape_timely_api` reads directly to set `venue` per event — the split is Timely's own structured data, not LLM inference
+- When the tag is blank (`timely_room`): the room named in the title (`timely_title_rooms`: "big top", then "continental club"), else `timely_default_room` (The Continental Club). Added 2026-11-25: a venue-side bulk edit on 2026-11-18 (13 events in one minute) dropped the tag, the old fallback saved them as copies under the config name "Continental Club Houston", and the copies left 8 approved Big Top rows unclaimed, so they were canceled. The run log prints how many events came back untagged. The API route was chosen 2026-05-10 over Selenium + LLM (exact dates, times, links and prices); the LLM path had split rooms by the same title wording
 
 ### Improv Houston
 - Uses `improv_tx` key, scrapes the all-TX-venues page

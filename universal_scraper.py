@@ -153,6 +153,11 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "timely_calendar_id": "54706359",
+        # For events Timely returns with no venue tag: room named in the title (checked in
+        # order), else the default. Names match Timely's own tags.
+        "timely_title_rooms": {"big top": "Shoeshine Charley's Big Top Lounge",
+                               "continental club": "The Continental Club"},
+        "timely_default_room": "The Continental Club",
         "url": "https://www.continentalclub.com/houston",
     },
     "woodland_pavilion": {
@@ -1169,6 +1174,19 @@ def timely_price(item):
     return None
 
 
+def timely_room(item, venue_config):
+    """Timely's venue tag; when it's blank (staff bulk edits drop it), the room named in the
+    title, else the config's default room."""
+    tag = (((item.get('taxonomies') or {}).get('taxonomy_venue') or [{}])[0].get('title') or '').strip()
+    if tag:
+        return tag
+    title = (item.get('title') or '').lower()
+    for phrase, room in venue_config.get('timely_title_rooms', {}).items():
+        if phrase in title:
+            return room
+    return venue_config.get('timely_default_room') or venue_config['name']
+
+
 def scrape_timely_api(venue_config, mode='daily'):
     """Fetch events from Timely API for venues using Timely calendar"""
     import time as time_module
@@ -1180,7 +1198,8 @@ def scrape_timely_api(venue_config, mode='daily'):
     start_date_utc = int(time_module.time())
     events = []
     page = 1
-    
+    untagged = 0
+
     while True:
         url = (f"https://events.timely.fun/api/calendars/{calendar_id}/events"
                f"?timezone=America/Chicago&view=posterboard"
@@ -1198,7 +1217,9 @@ def scrape_timely_api(venue_config, mode='daily'):
             items = data.get('data', {}).get('items', [])
             
             for item in items:
-                venue_name = item.get('taxonomies', {}).get('taxonomy_venue', [{}])[0].get('title', venue_config['name'])
+                venue_name = timely_room(item, venue_config)
+                if not ((item.get('taxonomies') or {}).get('taxonomy_venue') or [{}])[0].get('title'):
+                    untagged += 1
                 start_dt = item.get('start_datetime', '')
 
                 title_lower = item.get('title', '').lower()
@@ -1252,7 +1273,7 @@ def scrape_timely_api(venue_config, mode='daily'):
     classify_event_types(events)
     for event in events:
         event['visible'] = event.get('event_type') in ('music', 'comedy', 'performing_arts', 'arts', 'sports')
-    print(f"  ✓ Fetched {len(events)} events from Timely API")
+    print(f"  ✓ Fetched {len(events)} events from Timely API ({untagged} with no venue tag)")
     return events
 
 def parse_seetickets_html(html, venue_config):
