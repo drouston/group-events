@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import re
+import time
 from datetime import datetime
 
 from rapidfuzz import fuzz, utils
@@ -53,14 +54,29 @@ def page_text(key, refetch=False):
     return open(path).read()
 
 
-def run_prompt(name, key, text):
+def run_prompt(name, key, text, llm=us.DEFAULT_LLM):
     v = us.VENUES[key]
     if name in ('prod', 'full', 'minimal', 'scoring'):
         return us.extract_events_with_llm_raw(text[:100000], v['name'], v.get('venue_url') or v['url'],
                                               venue_instruction=v.get('venue_instruction'),
-                                              prompt_tier='full' if name == 'prod' else name).get('events', [])
+                                              prompt_tier='full' if name == 'prod' else name, llm=llm).get('events', [])
     system = variant(name)(v['name'], v.get('venue_url') or v['url'])
-    return us.get_llm_response(system, f"Extract all events:\n\n{text[:100000]}").get('events', [])
+    us.LAST_LLM_CALL.clear()
+    evs = us.get_llm_response(system, f"Extract all events:\n\n{text[:100000]}", llm=llm).get('events', [])
+    us._record_llm(v['name'], len(evs))
+    return evs
+
+
+_TITLE_TIME = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b', re.I)
+
+
+def title_time(name):
+    """HH:MM of a clock time written in an event title ('Showcase 8pm'), for scoring only."""
+    m = _TITLE_TIME.search(name or '')
+    if not m:
+        return None
+    h = int(m.group(1)) % 12 + (12 if m.group(3).lower() == 'p' else 0)
+    return f'{h:02d}:{m.group(2) or "00"}'
 
 
 def arena_truth(text):
@@ -98,16 +114,27 @@ def main():
     ap.add_argument('--prompts', default='min,prod')
     ap.add_argument('--runs', type=int, default=3)
     ap.add_argument('--refetch', action='store_true')
+    ap.add_argument('--llm', default=us.DEFAULT_LLM)
+    ap.add_argument('--cache', help='cached text name, if not the venue key (e.g. improv_tx_full)')
     args = ap.parse_args()
-    text = page_text(args.venue, args.refetch)
+    text = page_text(args.cache or args.venue, args.refetch)
     truth = arena_truth(text) if args.venue == 'arena_theatre' else None
     print(f'{args.venue}: {len(text)} chars' + (f', {len(truth)} linked shows' if truth else ''))
     results = {}
     for p in args.prompts.split(','):
         for i in range(args.runs):
-            evs = run_prompt(p, args.venue, text)
+            us.LLM_STATS.clear()
+            t0 = time.time()
+            evs = run_prompt(p, args.venue, text, args.llm)
+            secs = time.time() - t0
+            st = us.LLM_STATS.get(us.VENUES[args.venue]['name'], {})
             results.setdefault(p, []).append(evs)
-            line = f'{p:22} run {i + 1}: {len(evs):3} events'
+            line = (f'{p:22} run {i + 1}: {len(evs):3} events  dates {len({e.get("start_date") for e in evs}):3}'
+                    f'  {secs:4.0f}s  calls {st.get("calls", 0)}  out {st.get("output_tokens", 0):6}'
+                    f' ({st.get("output_tokens", 0) / max(len(evs), 1):.0f}/event)  cut off {st.get("truncated", 0)}')
+            titled = [e for e in evs if title_time(e.get('name'))]
+            hits = sum(1 for e in titled if (e.get('start_time') or '')[:5] == title_time(e.get('name')))
+            line += f'  timed {sum(1 for e in evs if e.get("start_time")):3}  title times read {hits}/{len(titled)}'
             if truth:
                 right, wrong, unmatched = score_arena(evs, truth)
                 line += f'  right {right}  wrong {len(wrong)}  unmatched {len(unmatched)}'
@@ -116,7 +143,7 @@ def main():
                 for u in unmatched[:5]:
                     line += f'\n     unmatched: {u}'
             print(line, flush=True)
-    path = f'{CACHE}/{args.venue}_{datetime.now():%Y%m%d_%H%M}.json'
+    path = f'{CACHE}/{args.cache or args.venue}_{args.llm}_{datetime.now():%Y%m%d_%H%M}.json'
     json.dump(results, open(path, 'w'), indent=1)
     print(f'Saved {path}')
 

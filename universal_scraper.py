@@ -23,6 +23,9 @@ import anthropic
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
+# Claude Haiku 5.5 is the extraction default (no output-cap splits); gpt-4o-mini until the key is set.
+DEFAULT_LLM = 'haiku' if os.environ.get('ANTHROPIC_API_KEY') else 'gpt4o-mini'
+
 
 def get_db_connection():
     if DATABASE_URL:
@@ -528,6 +531,19 @@ VENUES = {
         "city": "Houston",
         "state": "TX",
         "wait_time": 5,
+    },
+    "wolfsmiths": {
+        "name": "Wolfsmiths",
+        "aliases": ["Wolfsmiths Heights", "Wolfsmith's"],
+        # The events page is only an embedded Google Calendar; read its public feed.
+        "ical_url": "https://calendar.google.com/calendar/ical/c_0f6ed4ac980ff4bde6bcc3573fd74f6505223120d7012348bc442a6b037ae444%40group.calendar.google.com/public/basic.ics",
+        "ics_single_venue": True,
+        # Weekly repeats would otherwise run a full year out.
+        "days_out": 60,
+        "url": "https://wolfsmithsheights.com/pages/events",
+        "venue_url": "https://wolfsmithsheights.com/",
+        "city": "Houston",
+        "state": "TX",
     },
     # --- Austin venues (onboarding in progress) ---
     "antones_austin": {
@@ -1113,7 +1129,7 @@ def _log_process_counts():
         zombies += state == 'Z'
     print(f"  [procs] {total} processes, {zombies} zombies")
 
-def classify_event_types(events, llm='gpt4o-mini'):
+def classify_event_types(events, llm=DEFAULT_LLM):
     """Batch classify event_type for events that don't have one set. Updates dicts in place."""
     unclassified = [e for e in events if not e.get('event_type')]
     if not unclassified:
@@ -1541,7 +1557,19 @@ def scrape_google_ics(venue_config, mode='daily'):
     print(f"  ✓ Fetched {len(events)} events from Google Calendar ICS")
     return events
 
-def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
+# Stop reason and token counts of the latest LLM call; 'length'/'max_tokens' means the
+# response hit the output cap and was cut off.
+LAST_LLM_CALL = {}
+
+
+def _note_llm(finish, input_tokens, output_tokens):
+    LAST_LLM_CALL.update(finish=finish, input_tokens=input_tokens or 0, output_tokens=output_tokens or 0)
+
+
+CLAUDE_MODELS = {'haiku': 'claude-haiku-5-5', 'claude': 'claude-sonnet-5-5'}
+
+
+def get_llm_response(system_prompt, user_prompt, llm=DEFAULT_LLM):
     """Route LLM request to the appropriate provider"""
     if llm == 'gpt4o':
         client = OpenAI(api_key=os.environ.get('OPENAI_API_KEY'))
@@ -1555,6 +1583,7 @@ def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
                 {"role": "user", "content": user_prompt}
             ]
         )
+        _note_llm(response.choices[0].finish_reason, response.usage.prompt_tokens, response.usage.completion_tokens)
         return json.loads(response.choices[0].message.content)
 
     elif llm == 'gpt4o-mini':
@@ -1569,18 +1598,34 @@ def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
                 {"role": "user", "content": user_prompt}
             ]
         )
+        _note_llm(response.choices[0].finish_reason, response.usage.prompt_tokens, response.usage.completion_tokens)
         return json.loads(response.choices[0].message.content)
 
-    elif llm == 'claude':
+    elif llm in CLAUDE_MODELS:
+        # Streamed: the SDK refuses non-streamed calls this large (HTTP timeout guard).
+        # The SDK doesn't retry a stream that drops mid-response, so retry once here.
+        import httpx
         client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            temperature=0,
-            system=system_prompt + "\nReturn ONLY valid JSON with an 'events' array, no other text.",
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        text = response.content[0].text.strip()
+        for attempt in (1, 2):
+            try:
+                with client.messages.stream(
+                    model=CLAUDE_MODELS[llm],
+                    max_tokens=64000,
+                    thinking={"type": "disabled"},
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}]
+                ) as stream:
+                    response = stream.get_final_message()
+                break
+            except (httpx.TransportError, anthropic.APIConnectionError) as e:
+                if attempt == 2:
+                    raise
+                print(f"  [llm] stream dropped ({type(e).__name__}), retrying in 15s")
+                time.sleep(15)
+        _note_llm(response.stop_reason, response.usage.input_tokens, response.usage.output_tokens)
+        if response.stop_reason == 'refusal':
+            raise ValueError(f"{CLAUDE_MODELS[llm]} declined the request")
+        text = ''.join(b.text for b in response.content if b.type == 'text').strip()
         text = text.replace('```json', '').replace('```', '').strip()
         return json.loads(text)
 
@@ -1596,12 +1641,13 @@ def get_llm_response(system_prompt, user_prompt, llm='gpt4o-mini'):
                 {"role": "user", "content": user_prompt}
             ]
         )
+        _note_llm(response.choices[0].finish_reason, response.usage.prompt_tokens, response.usage.completion_tokens)
         return json.loads(response.choices[0].message.content)
 
     else:
         raise ValueError(f"Unknown LLM provider: {llm}")
 
-def extract_events_with_llm(page_text, venue_name, city, state, llm='gpt4o-mini'):
+def extract_events_with_llm(page_text, venue_name, city, state, llm=DEFAULT_LLM):
     """Extract events using LLM"""
     if "White Oak" in venue_name:
         char_limit = 100000
@@ -1646,6 +1692,8 @@ SPLIT_SHIFT_CHARS = 1500
 SPLIT_COUNTS = {}
 # Cancellation checks skipped for missing too many rows (a partial read), per venue config name.
 UNSTABLE_READS = {}
+# LLM extraction calls, tokens and cut-off responses per venue name in this run.
+LLM_STATS = {}
 
 # Extraction prompt tiers, set per venue with "prompt_tier" (default full). Output is sensitive to
 # the exact prompt text, down to whitespace (Arena, 2026-11-18): re-test with prompt_lab.py after edits.
@@ -1681,7 +1729,21 @@ PROMPT_FIELDS = {
 """,
 }
 
-def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm='gpt4o-mini', _depth=0, prompt_tier='full'):
+def _record_llm(venue_name, n_events):
+    call = dict(LAST_LLM_CALL)
+    if not call:
+        return
+    st = LLM_STATS.setdefault(venue_name, {'calls': 0, 'input_tokens': 0, 'output_tokens': 0, 'truncated': 0})
+    st['calls'] += 1
+    st['input_tokens'] += call['input_tokens']
+    st['output_tokens'] += call['output_tokens']
+    cut = call['finish'] in ('length', 'max_tokens')
+    st['truncated'] += cut
+    print(f"  [llm] finish={call['finish']} in={call['input_tokens']} out={call['output_tokens']} "
+          f"events={'unparsed' if n_events is None else n_events}{' CUT OFF' if cut else ''}")
+
+
+def extract_events_with_llm_raw(content, venue_name, venue_url, is_html=False, venue_instruction=None, llm=DEFAULT_LLM, _depth=0, prompt_tier='full'):
     """Extract events using LLM from text or HTML.
 
     venue/city/state are deliberately NOT part of the extraction schema — we already
@@ -1716,9 +1778,13 @@ Fields to extract:
 {PROMPT_FIELDS[prompt_tier]}{venue_note}{html_hint}
 Return ONLY valid JSON with an "events" array containing ALL events found."""
     user_prompt = f"Extract all events:\n\n{content}"
+    LAST_LLM_CALL.clear()
     try:
-        return get_llm_response(system_prompt, user_prompt, llm=llm)
+        result = get_llm_response(system_prompt, user_prompt, llm=llm)
+        _record_llm(venue_name, len(result.get('events', [])))
+        return result
     except json.JSONDecodeError:
+        _record_llm(venue_name, None)
         if _depth >= 3 or len(content) < 4000:
             raise
         print(f"  ⚠ LLM response truncated ({len(content)} chars sent) — splitting content and retrying")
@@ -1736,6 +1802,22 @@ Return ONLY valid JSON with an "events" array containing ALL events found."""
         events_a = result_a.get('events', [])[:-1]
         events_b = result_b.get('events', [])[1:]
         return {'events': events_a + events_b}
+
+def extract_pages(texts, venue, llm=DEFAULT_LLM):
+    """LLM extraction over one or more page texts, one call each; events combined in page order."""
+    events = []
+    for text in texts:
+        result = extract_events_with_llm_raw(
+            text[:100000],
+            venue_name=venue['name'],
+            venue_url=venue.get('venue_url') or venue.get('url', ''),
+            is_html=False,
+            venue_instruction=venue.get('venue_instruction', ''),
+            llm=llm,
+            prompt_tier=venue.get('prompt_tier', 'full'))
+        events.extend(result.get('events', []))
+    return {'events': events}
+
 
 def parse_white_oak_html(html):
     """Parse White Oak events directly from HTML"""
@@ -2033,7 +2115,7 @@ def _legacy_cancel(venue_key, events, dry_run):
     return check_canceled_events(venue_key, events)
 
 
-def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
+def scrape_venue(venue_key, mode='daily', llm=DEFAULT_LLM, dry_run=False):
     """Scrape a single venue with hash checking and mode support"""
     venue = VENUES[venue_key]
 
@@ -2085,6 +2167,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
         # back to the single 'url' for venues (like Improv) that just paginate one listing.
         start_urls = venue.get('urls') or [venue['url']]
         total_pages_fetched = 0
+        page_texts = []
 
         for start_url in start_urls:
             current_url = start_url
@@ -2100,6 +2183,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
                     **trim_options(venue)
                 )
                 combined_text += '\n' + page_text
+                page_texts.append(page_text)
                 total_pages_fetched += 1
 
                 # Look for next page link
@@ -2151,17 +2235,9 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
     elif venue_key == 'mucky_duck':
         events_data = parse_mucky_duck_html(html)
     else:
-        char_limit = 100000
-        venue_instruction = venue.get('venue_instruction', '')
-        events_data = extract_events_with_llm_raw(
-            page_text[:char_limit],
-            venue_name=venue['name'],
-            venue_url=venue.get('venue_url') or venue.get('url', ''),
-            is_html=False,
-            venue_instruction=venue_instruction,
-            llm=llm,
-            prompt_tier=venue.get('prompt_tier', 'full')
-        )
+        # Paginated: one call per page. Given all pages at once, the model stopped after the
+        # first (Improv 21 of 55 listings, Smart Financial 25 of 43, 2026-11-22).
+        events_data = extract_pages(page_texts if venue.get('paginated') else [page_text], venue, llm)
 
     events = events_data.get('events', [])
     print(f"  ✓ Found {len(events)} events")
@@ -2303,7 +2379,7 @@ def scrape_venue(venue_key, mode='daily', llm='gpt4o-mini', dry_run=False):
 
     return events, canceled_count
 
-def scrape_all_venues(mode='daily', llm='gpt4o-mini', auto_approve=False, group=None, dry_run=False):
+def scrape_all_venues(mode='daily', llm=DEFAULT_LLM, auto_approve=False, group=None, dry_run=False):
     """Scrape all venues, save, and log stats per venue.
 
     group filters down to venues tagged with a matching schedule_group (e.g.
@@ -3154,6 +3230,9 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS splits INTEGER DEFAULT 0''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS error TEXT''')
     c.execute('''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS unstable_reads INTEGER DEFAULT 0''')
+    for col in ('llm_calls', 'llm_input_tokens', 'llm_output_tokens', 'llm_truncations'):
+        c.execute(f'''ALTER TABLE scrape_stats ADD COLUMN IF NOT EXISTS {col} INTEGER DEFAULT 0''')
+    llm = LLM_STATS.pop(venue_name, {})
 
     # Get current totals
     c.execute(f'''SELECT
@@ -3166,8 +3245,9 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
     c.execute(f'''INSERT INTO scrape_stats
         (scrape_date, venue, total_scraped, total_approved, total_rejected,
          new_events, canceled_events, total_pending, scrape_mode, updated_events, date_corrections,
-         content_changes, splits, error, link_changes, unstable_reads)
-        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
+         content_changes, splits, error, link_changes, unstable_reads,
+         llm_calls, llm_input_tokens, llm_output_tokens, llm_truncations)
+        VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})''',
         (today, venue_name,
          stats.get('inserted', 0) + stats.get('skipped', 0),
          row[0], row[2],
@@ -3181,7 +3261,9 @@ def log_scrape_stats(venue_name, mode, stats, canceled_count=0, error=None):
          SPLIT_COUNTS.pop(venue_name, 0),
          error[:1000] if error else None,
          stats.get('link_changes', 0),
-         UNSTABLE_READS.pop(venue_name, 0)))
+         UNSTABLE_READS.pop(venue_name, 0),
+         llm.get('calls', 0), llm.get('input_tokens', 0), llm.get('output_tokens', 0),
+         llm.get('truncated', 0)))
     conn.commit()
     conn.close()
 
@@ -3428,7 +3510,7 @@ if __name__ == "__main__":
                         help='Scrape a single venue by key (e.g. white_oak)')
     parser.add_argument('--group', type=str, default=None,
                         help="Scrape only venues tagged with this schedule_group (e.g. afternoon). Ignored if --venue is set.")
-    parser.add_argument('--llm', choices=['gpt4o', 'gpt4o-mini', 'claude', 'groq'], default='gpt4o-mini',
+    parser.add_argument('--llm', choices=['gpt4o', 'gpt4o-mini', 'haiku', 'claude', 'groq'], default=DEFAULT_LLM,
                         help='LLM provider to use for extraction')
     parser.add_argument('--dry-run', action='store_true',
                         help='Extract and print events without writing to DB')
@@ -3441,6 +3523,8 @@ if __name__ == "__main__":
     parser.add_argument('--leak-report', action='store_true',
                         help='List active same-day pairs the scorer says are unlinked duplicates (read-only)')
     args = parser.parse_args()
+    if not os.environ.get('ANTHROPIC_API_KEY'):
+        print("⚠️  ANTHROPIC_API_KEY not set: extraction defaults to gpt4o-mini, not haiku")
 
     if args.match_report is not None:
         match_report(args.match_report)

@@ -32,7 +32,7 @@ group-events/
 ## Tech Stack
 - **Backend:** Python 3.11, Flask
 - **Scraping:** Selenium + ChromeDriver (headless Chrome)
-- **LLM:** OpenAI GPT-4o-mini (default), GPT-4o, Claude Sonnet, Groq/Llama 3.1 70B
+- **LLM:** Claude Haiku 5.5 (default since 2026-11-25), GPT-4o-mini, GPT-4o, Claude Sonnet 5.5, Groq/Llama 3.1 70B
 - **DB:** PostgreSQL on Railway (psycopg2), SQLite fallback locally
 - **Frontend:** Vanilla JS, Jinja2 templates
 - **Deployment:** Railway (web service + daily cron + weekly cron)
@@ -76,16 +76,40 @@ python3 universal_scraper.py --mode onboard     # New venue, skip hash, filter p
 ### Additional Flags
 ```bash
 --venue <key>        # Scrape single venue (e.g. --venue white_oak)
---llm <provider>     # gpt4o, gpt4o-mini (default), claude, groq
+--llm <provider>     # haiku (default), gpt4o-mini, gpt4o, claude, groq
 --dry-run            # Extract and print without saving to DB
 --auto-approve       # Auto-approve events on insert (use with onboard)
 ```
 
 ### LLM Providers
-- `gpt4o-mini` — default, best cost/quality balance
-- `gpt4o` — fallback for complex venues
-- `claude` — Claude Sonnet 4, good quality, higher cost
+- `haiku` — **default**: Claude Haiku 5.5 (`claude-haiku-5-5`), 128K output cap, so no splits. Falls back to `gpt4o-mini` with a warning when `ANTHROPIC_API_KEY` is unset (`DEFAULT_LLM`)
+- `gpt4o-mini` — previous default; 16K output cap
+- `gpt4o` — OpenAI fallback
+- `claude` — Claude Sonnet 5.5 (`claude-sonnet-5-5`), higher cost, untested on our prompts
 - `groq` — Llama 3.1 70B via Groq, free tier available
+
+Claude calls are streamed (`max_tokens` 64000; the SDK refuses large non-streamed calls), thinking disabled (it adds billed output tokens), no `temperature` (current Claude models reject it), and retried once after 15s if the connection drops (the SDK doesn't retry a stream that drops mid-response). Each extraction call logs `[llm] finish=… in=… out=… events=…`, and per-venue totals go to `scrape_stats` (`llm_calls`, `llm_input_tokens`, `llm_output_tokens`, `llm_truncations`). A truncation is `finish=length` (OpenAI) or `max_tokens` (Claude).
+
+### Switch to Claude Haiku 5.5 (2026-11-25)
+**Why:** splits and short reads were output-side problems. gpt-4o-mini stops at 16,384 output tokens; a cut-off response is unparseable, so the page is split and re-read (Secret Group: 3 calls, 36K output tokens, 44% wasted), and the split drops boundary events. Separately, it sometimes returns valid but short JSON (Secret Group stopping after today, Toyota returning 1 event, Improv/Smart Financial stopping after page 1). Short reads twice in a row cancel real shows (Riot's Dec 15-21 week, 16 shows, 2026-11-22).
+
+**prompt_lab results** (`prompt_lab.py <venue> --llm haiku`, same cached text for both models, 3-5 runs each, dates checked against approved rows):
+| Venue | Haiku 5.5 (full prompt) | gpt-4o-mini |
+|---|---|---|
+| Secret Group | 117 events, 1 call, ~25K out, 73s; reads all 27 times written in titles | 115, 3 calls (split), no title times |
+| Riot | 78 events, 1 call, ~21K out, 56s | 2 splits, ~645s in production |
+| Toyota | 30/30 approved found, dates right | 1 event |
+| Improv (pages joined) | 74/74 | 24-33/74 |
+| Smart Financial (pages joined) | 36/36 | 22/36 |
+| House of Blues, 713, Heights | all found, dates right | same |
+| Bad Astronaut | 2027 shows dated 2027, 3/3 | dated 2026 in 1 of 3 |
+| Dosey Doe | 53/54 (misses Toby Keith's Easy Money Band, 2027-05-06, every run) | 53-54/54 |
+| Arena (minimal tier) | 20/20 link dates, 5/5 | 22/23 runs |
+Haiku was 3-5x faster and identical run to run. It uses ~1.3-1.5x more output tokens per event (different tokenizer, and it fills `start_time`), but costs less per token ($0.10/$0.50 per M vs $0.15/$0.60) and never re-calls. Both models read Keith Sweat (Smart Financial) as 2026-12-20 where the DB row says 12-31: a page or DB question, not extraction.
+
+**Scoring prompt on Haiku** (all venues above, 3 runs each): same accuracy as full, including Arena 20/20 (gpt-4o-mini misread Arena on this tier), with 10-50% fewer output tokens and faster runs (Heights 6.3K vs 12.4K tokens, Dosey Doe 7.1K vs 13.9K, Riot 14.4K vs 21.2K). **Gap:** the scoring tier has no `end_date`, so Toyota's two-day events (Houston Hoopfest Dec 12-13, PBR Dec 19-20) came back as one day and the second night would look missing; Improv listed each night separately and was unaffected. Add `end_date` (and re-test) before any venue uses the scoring tier. Full stays the default: descriptions, genres and event types still need improving.
+
+**Open:** year chronology, short reads and missing times were measured on prompt_lab only; confirm them from production `[llm]` logs and `scrape_stats` over the first weeks. Per-page extraction for paginated venues stays in place, though Haiku reads joined pages fine. Pages are still cut at 100k characters (Riot ~114k), a gpt-4o-mini-era limit that Haiku's 1M input doesn't need.
 
 ### Prompt Tiers
 Per-venue `prompt_tier` in VENUES (`FULL_FIELDS` / `PROMPT_FIELDS` in `universal_scraper.py`):
@@ -93,7 +117,7 @@ Per-venue `prompt_tier` in VENUES (`FULL_FIELDS` / `PROMPT_FIELDS` in `universal
 - `scoring` — only what `event_matching` scores on (name, dates, times, links, location), 439 characters
 - `minimal` — name, start_date, event_url, 284 characters
 
-Use `scoring`/`minimal` when a venue shows extraction problems; both run `classify_event_types` afterward (a separate names-only LLM call) since they don't ask for `event_type`. Best practice: ask only for what the page provides. Model output is sensitive to exact prompt text, down to whitespace (Arena, 2026-11-18), so test any tier wording change with `prompt_lab.py` (cached page text, repeated runs; Arena scored against its link dates).
+Use `scoring`/`minimal` when a venue shows extraction problems (scoring tier lacks `end_date`, see the Haiku notes below); both run `classify_event_types` afterward (a separate names-only LLM call) since they don't ask for `event_type`. Best practice: ask only for what the page provides. Model output is sensitive to exact prompt text, down to whitespace (Arena, 2026-11-18), so test any tier wording change with `prompt_lab.py` (cached page text, repeated runs; Arena scored against its link dates).
 
 ### Key Functions
 - `scrape_page()` — Selenium page fetch with scroll + pagination support
@@ -105,7 +129,7 @@ Use `scoring`/`minimal` when a venue shows extraction problems; both run `classi
 - `check_canceled_events()` — weekly mode canceled event flagging
 
 ### Duplicate Detection
-> **Live since 2026-11-09:** the unified scorer in `event_matching.py` ([design](https://claude.ai/artifact/Gev7r6tWdojSbV2fSzYDj2)) decides and writes every save and cancellation (`apply_unified`, `cancel_unified` in `universal_scraper.py`). Multi-venue city calendar feeds still use the legacy path below, which is otherwise retired, along with the weekly `detect_existing_duplicates`/`detect_url_date_conflicts` write sweeps. Switch with the `MATCH_ENGINE` env var: `unified` (default), `shadow` (log only, legacy writes — the rollback), `legacy`. Decisions are still logged to `match_log`; tests in `tests/test_golden_matches.py` and `tests/test_unified_writes.py`. Open scoring questions: the Scoring Review Items doc.
+> **Live since 2026-11-09:** the unified scorer in `event_matching.py` ([design](https://claude.ai/artifact/Gev7r6tWdojSbV2fSzYDj2)) decides and writes every save and cancellation (`apply_unified`, `cancel_unified` in `universal_scraper.py`). Multi-venue city calendar feeds still use the legacy path below, which is otherwise retired, along with the weekly `detect_existing_duplicates`/`detect_url_date_conflicts` write sweeps. Switch with the `MATCH_ENGINE` env var: `unified` (default), `shadow` (log only, legacy writes — the rollback), `legacy`. Since 2026-11-22 a runner-up (a row that scored but lost to another) no longer counts as seen for cancellation; tied rows still do, until the tie is reviewed. A listing and row whose key links both exist but differ score -20 (an evidence-link mismatch stays -1). Decisions are still logged to `match_log`; tests in `tests/test_golden_matches.py` and `tests/test_unified_writes.py`. Open scoring questions: the Scoring Review Items doc.
 
 - **Exact match** (name + date + venue + start_time) → auto-skip
 - **URL match** (`ticket_url` and/or `event_url` identifies the same event) → update in place (title/time/openers/price/URL drift all get refreshed on the existing row). Whether each URL field requires `start_date` to also match is controlled per-venue by three toggles stamped onto each event dict in `scrape_venue` — `dupe_use_ticket_url`, `dupe_use_event_url`, `dupe_use_start_date` (all default `True`, i.e. today's safe default: a URL match alone isn't enough, the date must agree too). A venue only gets `dupe_use_start_date: False` after confirming its URL is genuinely unique per occurrence (not a reused comic-profile or generic template page — see Improv Houston and Dan Electro's below) — only then does a URL match with a *different* date get treated as a correction (updates `start_date` in place) rather than falling through to a duplicate insert. If the corrected row was already `approved` and the venue isn't `auto_approve`, the correction also reverts it to `pending` so a human reviews the new date before it's public again.
@@ -151,6 +175,7 @@ docs_jazz           # Doc's Jazz Club
 arena_theatre       # Arena Theatre (no visible listing text; the LLM reads dates from URL slugs, which it misreads — see to-do)
 dosey_doe           # Dosey Doe - The Big Barn (The Woodlands)
 den_comedy          # The Den Comedy Club (inside Wolfsmiths; Squarespace ticket store)
+wolfsmiths          # Wolfsmiths (Google Calendar feed, ics_single_venue, 60 days out)
 
 # Austin
 emos_austin           # Emo's Austin
@@ -184,7 +209,7 @@ See [VENUES.md](VENUES.md) for platform/config detail and capture-quality notes 
 **Environment variables needed:**
 - `DATABASE_URL` — Railway PostgreSQL public connection string
 - `OPENAI_API_KEY`
-- `ANTHROPIC_API_KEY` (optional, for --llm claude)
+- `ANTHROPIC_API_KEY` — required for the default `haiku` extraction (set on all crons and the web service 2026-11-25)
 - `GROQ_API_KEY` (optional, for --llm groq)
 
 ---
@@ -218,10 +243,12 @@ Two patterns to keep in mind when reviewing extraction output or designing norma
 - [ ] **PRIORITY: year chronology in extraction** (added 2026-11-10). Venues that list next-year shows without a year get them dated to the current year on some runs, so the save step drops them as past. Bad Astronaut's three 2027 shows (Prekindle, no year shown) came back on alternate runs (Nov 3, 7, 9 yes; Nov 5, 6, 8, 10 no). Under unified matching this makes approved future shows look missing: two misses in a row would cancel them (the legacy check ran before the past-date filter and matched by link, so it never saw this). Fix the year inference itself; until then, check future shows that venues list without a year and clear false tentative cancellation flags by hand.
   - **Findings 2026-11-11/12:** the live prompt (`extract_events_with_llm_raw`) has no year rule, only today's date; gpt-4o-mini dated Bad Astronaut's 2027 shows to 2026 in 5/5 runs (the "use 2026" prompt in `extract_events_with_llm` is dead code). Adding a year rule to the prompt fixed only 1/5.
   - **Candidate fix (shelved, not approved):** `git stash list` → "year-from-weekday fix". The LLM returns the page's `weekday`; `fix_year_from_weekday` (in `save_to_database`, before the past filter) moves a past date forward a year only when that weekday fits next year and not this one. Bad Astronaut 5/5 correct; no change on Heights, Doc's, Dan Electro's or Scout Bar (2 runs each); unit tests in the stash. Open points: `--dry-run` skips `save_to_database` so it wouldn't show the fix; a few more output tokens per event on pages near the split limit.
+  - **Haiku 5.5 (2026-11-25):** Bad Astronaut's 2027 shows dated correctly in 3/3 prompt_lab runs and the first scraper dry run, with no prompt change. Watch production before closing; the shelved fix stays available.
 - [ ] **HIGH: overnight shows expanded into two nights** (added 2026-11-10). A show listed as "Fri Nov 13 11:55 PM – Sat Nov 14 1:55 AM" (Dan Electro's LATE NIGHT w/ The Showponies, #17816/#17817) comes back from the LLM as a Nov 13-14 range, and `expand_multi_night_events` makes one row per night, so a single show lands twice. Candidate fix (not yet approved): a two-day range whose `end_time` is earlier than `start_time` is one overnight show, kept as one row with `end_date` dropped; a real two-night run (end time later than start) still expands. Extraction normalization only, no scoring change.
 - [ ] **HIGH: LLM prompt/response — short reads and missing times** (added 2026-11-18). Address together with the year-chronology item above; all are prompt/response issues, not page or scoring problems.
   - **Short reads:** Secret Group returns only today's 4-6 events on 7 of the last 20 daily runs (11/3-11/15), with 0 splits and valid JSON. Full runs (100-138 events) always split. Reproduced 2026-11-17 on a capture whose text held all 134 events (`debug_exports/secret_group_20261117_2138/`); 3 repeats on 2026-11-18 returned 133. A page-vs-output date-count check was considered and rejected (other root issues can trigger it); fix the prompt/response instead.
   - **Times not read:** 0 of 133 Secret Group events get a `start_time`, even titles that carry one ("Comedy Showcase 8pm", "Joe List … THU. 8PM SHOW"), though some DB rows do have times. Filling times by regex was rejected; fix in prompt/response. Without times, `multi_show`'s -40 can't separate early/late shows, and untimed different shows on one night score 59-69 (16 Secret Group leak pairs, e.g. MONDAY NIGHT COMEDY! / NIGHT COURT: Monday Open Mic Comedy).
+  - **Haiku 5.5 (2026-11-25):** both look like gpt-4o-mini limits. Haiku read all 117 Secret Group events in one call in 8/8 runs (full and scoring prompts) and set the title time on 27/27 titled events. Confirm from production `[llm]` logs (a short read shows as `finish=end_turn` with a low event count).
 - [x] Event title cleanup — strip `(SOLD OUT)`, `(NEW DATE)`, venue references, Riot suffixes (prompt TITLE CLEANUP + `strip_venue_reference`)
 - [x] Add `sold_out`, `date_changed`, `openers` fields to DB and LLM prompt
 - [x] Archive logic — move approved past events to `past_events` table (weekly job, `archive_past_events`)
@@ -238,7 +265,7 @@ Two patterns to keep in mind when reviewing extraction output or designing norma
 - [x] **Unified matching go-live** — live 2026-11-09 (`MATCH_ENGINE=unified`).
 - [ ] **No-op ties** (scoring, needs approval): a listing that ties two rows but has nothing new to write to its top row still opens a review item. Candidate: update the top row in place with no review. Example: Morat at Smart Financial (#11549/#11704, both approved, sibling cap 74/74). Rejected rows already don't count toward ties or the sibling cap (since 2026-11-06). Tracked in the Scoring Review Items doc.
 - [ ] Status migration contract step: after go-live, move reads to `review_status`/`event_status` and drop the legacy `status` column and its sync trigger.
-- [ ] Remaining `possible_duplicate` backlog (~150 rows after the 2026-11-02 Doc's/Arena cleanup) — triage with the scorer once it's live rather than by hand.
+- [ ] Remaining `possible_duplicate` backlog (12 rows after the 2026-11-24 triage: Austin, City Hall and Dosey Doe private events) — triage with the scorer once it's live rather than by hand.
 - [ ] Doc's Jazz Club runs 7:00 and 9:30 shows on many nights; extraction only captures one per night.
 - [ ] **Review scraping for optimization** (added 2026-11-02). A full Houston onboard dry run (34 venues, 1,326 events) took ~67 min, about twice the estimate. Slowest: Riot Comedy 645s (page is 114k chars, over the 100k input cap, so later events are cut off before extraction; split twice), House of Blues 367s and Toyota Center 352s, Secret Group 500s, Dosey Doe ~480s (one LLM split each), Smart Financial 169s (multiple category pages). Candidates: HTML trimming before the LLM for heavy pages, dropping low-value output fields (description, per-field confidence) to stay under the output cap, and per-venue run timing in `scrape_stats`. Also found: Last Concert's `/calendar/` URL now 404s (0 events).
   - **Pages with two overlapping event listings** (added 2026-11-10): per-venue section setting that keeps only the complete listing (or drops the repeat) before the LLM. Unified matching already skips in-scrape copies, but can't fix a skipped section (Dan Electro's: cards end Nov 28, a calendar below holds later dates; runs read 33 vs 41-45 events, so later shows get false tentative flags), fields mixed across sections (Toyota Center carousel links), or doubled page size (Riot desktop + mobile layouts, 114k chars). Toyota may still need its own parser.
@@ -299,7 +326,7 @@ Idea from the 2026-07-30 Heights Theater date-drift cleanup: some ticket platfor
 
 ### Improv Houston
 - Uses `improv_tx` key, scrapes the all-TX-venues page
-- Paginated via `#moreshowsbtn` link detection
+- Paginated via `#moreshowsbtn` link detection; each page is extracted in its own LLM call (`extract_pages`, all `paginated` venues). Given all pages joined, gpt-4o-mini stopped after page 1
 - Filters Houston-only events via `venue_instruction`
 - Multi-night events (e.g. "Apr 17-18") not fully expanded — known limitation
 
